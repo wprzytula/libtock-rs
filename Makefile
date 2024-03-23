@@ -285,6 +285,8 @@ $(eval $(call platform_build,imxrt1050,thumbv7em-none-eabi))
 $(eval $(call platform_build,msp432,thumbv7em-none-eabi))
 $(eval $(call platform_build,clue_nrf52840,thumbv7em-none-eabi))
 $(eval $(call platform_flash,clue_nrf52840,thumbv7em-none-eabi))
+$(eval $(call platform_build,cc2650dk,thumbv7m-none-eabi))
+$(eval $(call platform_flash,cc2650dk,thumbv7m-none-eabi))
 
 # clean cannot safely be invoked concurrently with other actions, so we don't
 # need to depend on toolchain. We also manually remove the nightly toolchain's
