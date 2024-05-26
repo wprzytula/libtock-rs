@@ -30,6 +30,7 @@ libtock_ambient_light = { path = "apis/sensors/ambient_light" }
 libtock_buttons = { path = "apis/interface/buttons" }
 libtock_buzzer = { path = "apis/interface/buzzer" }
 libtock_console = { path = "apis/interface/console" }
+libtock_console_lite = { path = "apis/interface/console_lite" }
 libtock_debug_panic = { path = "panic_handlers/debug_panic" }
 libtock_gpio = { path = "apis/peripherals/gpio" }
 libtock_i2c_master = { path = "apis/peripherals/i2c_master" }
@@ -71,6 +72,7 @@ members = [
     "apis/interface/buttons",
     "apis/interface/buzzer",
     "apis/interface/console",
+    "apis/interface/console_lite",
     "apis/interface/leds",
     "apis/kernel/low_level_debug",
     "apis/peripherals/adc",
