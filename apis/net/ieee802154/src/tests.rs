@@ -62,6 +62,8 @@ use super::{RxOperator, RxRingBuffer};
 type Ieee802154 = super::Ieee802154<FakeSyscalls>;
 type RxSingleBufferOperator<'buf, const N: usize> =
     super::RxSingleBufferOperator<'buf, N, FakeSyscalls>;
+type RxBufferAlternatingOperator<'buf, const N: usize> =
+    super::RxBufferAlternatingOperator<'buf, N, FakeSyscalls>;
 
 #[test]
 fn no_driver() {
@@ -139,6 +141,25 @@ mod rx {
         test(driver, &mut operator)
     }
 
+    fn test_with_buf_alternating_operator<const SUPPORTED_FRAMES: usize>(
+        driver: &Ieee802154Phy,
+        test: impl Fn(&Ieee802154Phy, &mut dyn RxOperator),
+    ) {
+        let mut buf1 = RxRingBuffer::<SUPPORTED_FRAMES>::new();
+        let mut buf2 = RxRingBuffer::<SUPPORTED_FRAMES>::new();
+        let mut operator = RxBufferAlternatingOperator::new(&mut buf1, &mut buf2).unwrap();
+
+        test(driver, &mut operator)
+    }
+
+    fn test_with_both_operators<const SUPPORTED_FRAMES: usize>(
+        driver: &Ieee802154Phy,
+        test: impl Fn(&Ieee802154Phy, &mut dyn RxOperator),
+    ) {
+        test_with_single_buf_operator::<SUPPORTED_FRAMES>(driver, &test);
+        test_with_buf_alternating_operator::<SUPPORTED_FRAMES>(driver, &test);
+    }
+
     fn no_frame_comes(_driver: &Ieee802154Phy, operator: &mut dyn RxOperator) {
         // No frame is available, so we expect to panic in tests,
         // because yield_wait is called without pending upcalls.
@@ -157,11 +178,21 @@ mod rx {
     }
 
     #[test]
+    #[should_panic = "yield-wait called with no queued upcall"]
+    fn no_frame_comes_dual_buf() {
+        test_with_driver(|driver| {
+            const SUPPORTED_FRAMES: usize = 2;
+
+            test_with_buf_alternating_operator::<SUPPORTED_FRAMES>(driver, no_frame_comes);
+        });
+    }
+
+    #[test]
     fn receive_frame() {
         test_with_driver(|driver| {
             const SUPPORTED_FRAMES: usize = 2;
 
-            test_with_single_buf_operator::<SUPPORTED_FRAMES>(driver, |driver, operator| {
+            test_with_both_operators::<SUPPORTED_FRAMES>(driver, |driver, operator| {
                 let frame1 = b"alamakota";
 
                 driver.radio_receive_frame(FakeFrame::with_body(frame1));
@@ -202,35 +233,42 @@ mod rx {
     }
 
     #[test]
+    #[should_panic = "yield-wait called with no queued upcall"]
+    fn receive_frame_only_one_dual_bufs() {
+        test_with_driver(|driver| {
+            const SUPPORTED_FRAMES: usize = 2;
+
+            test_with_buf_alternating_operator::<SUPPORTED_FRAMES>(driver, only_one_frame_comes);
+        });
+    }
+
+    #[test]
     fn receive_many_frames() {
         test_with_driver(|driver| {
             const SUPPORTED_FRAMES: usize = 3;
 
-            test_with_single_buf_operator::<{ SUPPORTED_FRAMES + 1 }>(
-                driver,
-                |driver, operator| {
-                    for (times, frame) in
-                        [1, 2, 3, 10]
-                            .iter()
-                            .copied()
-                            .zip([&b"one"[..], b"two", b"three", b"ten"])
-                    {
-                        for _ in 0..times {
-                            driver.radio_receive_frame(FakeFrame::with_body(frame));
-                        }
-
-                        for _ in 0..core::cmp::min(times, SUPPORTED_FRAMES) {
-                            let got_frame = operator.receive_frame().unwrap();
-                            let expected_frame = frame;
-                            assert_eq!(got_frame.payload_len as usize, expected_frame.len());
-                            assert_eq!(
-                                &got_frame.body[..got_frame.payload_len as usize],
-                                expected_frame
-                            );
-                        }
+            test_with_both_operators::<{ SUPPORTED_FRAMES + 1 }>(driver, |driver, operator| {
+                for (times, frame) in
+                    [1, 2, 3, 10]
+                        .iter()
+                        .copied()
+                        .zip([&b"one"[..], b"two", b"three", b"ten"])
+                {
+                    for _ in 0..times {
+                        driver.radio_receive_frame(FakeFrame::with_body(frame));
                     }
-                },
-            );
+
+                    for _ in 0..core::cmp::min(times, SUPPORTED_FRAMES) {
+                        let got_frame = operator.receive_frame().unwrap();
+                        let expected_frame = frame;
+                        assert_eq!(got_frame.payload_len as usize, expected_frame.len());
+                        assert_eq!(
+                            &got_frame.body[..got_frame.payload_len as usize],
+                            expected_frame
+                        );
+                    }
+                }
+            });
         });
     }
 
@@ -239,34 +277,31 @@ mod rx {
         test_with_driver(|driver| {
             const SUPPORTED_FRAMES: usize = 3;
 
-            test_with_single_buf_operator::<{ SUPPORTED_FRAMES + 1 }>(
-                driver,
-                |driver, operator| {
-                    let frame1 = b"alamakota";
-                    let frame2 = b"ewamamewe";
-                    let frame3 = b"wojciechmalaptop";
-                    let frames: [&[u8]; 3] = [frame1, frame2, frame3];
+            test_with_both_operators::<{ SUPPORTED_FRAMES + 1 }>(driver, |driver, operator| {
+                let frame1 = b"alamakota";
+                let frame2 = b"ewamamewe";
+                let frame3 = b"wojciechmalaptop";
+                let frames: [&[u8]; 3] = [frame1, frame2, frame3];
 
-                    let order = [0, 1, 2, 2, 1, 0, 2, 2, 1, 0, 2];
-                    for idx in order {
-                        let times = idx + 1;
+                let order = [0, 1, 2, 2, 1, 0, 2, 2, 1, 0, 2];
+                for idx in order {
+                    let times = idx + 1;
 
-                        for _ in 0..times {
-                            driver.radio_receive_frame(FakeFrame::with_body(frames[idx]));
-                        }
-
-                        for _ in 0..core::cmp::min(times, SUPPORTED_FRAMES) {
-                            let got_frame = operator.receive_frame().unwrap();
-                            let expected_frame = frames[idx];
-                            assert_eq!(got_frame.payload_len as usize, expected_frame.len());
-                            assert_eq!(
-                                &got_frame.body[..got_frame.payload_len as usize],
-                                expected_frame
-                            );
-                        }
+                    for _ in 0..times {
+                        driver.radio_receive_frame(FakeFrame::with_body(frames[idx]));
                     }
-                },
-            );
+
+                    for _ in 0..core::cmp::min(times, SUPPORTED_FRAMES) {
+                        let got_frame = operator.receive_frame().unwrap();
+                        let expected_frame = frames[idx];
+                        assert_eq!(got_frame.payload_len as usize, expected_frame.len());
+                        assert_eq!(
+                            &got_frame.body[..got_frame.payload_len as usize],
+                            expected_frame
+                        );
+                    }
+                }
+            });
         });
     }
 }
