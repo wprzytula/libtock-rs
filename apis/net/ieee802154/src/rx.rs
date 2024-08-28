@@ -34,9 +34,8 @@ const EMPTY_FRAME: Frame = Frame {
 /// Given the non-deterministic nature of upcalls, the userprocess must carefully
 /// handle receiving upcalls. There exists a risk of dropping 15.4 packets while
 /// reading from the ring buffer (as the ring buffer is unallowed while reading).
-/// This could be handled by utilizing two ring buffers and alternating which
-/// belongs to the kernel and which is being read from. However, efforts to implement that
-/// failed on Miri level - we couldn't find a sound way to achieve that.
+/// This can be handled by utilizing two ring buffers and alternating which
+/// belongs to the kernel and which is being read from. This is done by [RxBufferAlternatingOperator].
 /// Alternatively, the user can also utilize a single ring buffer if dropped frames may be permissible.
 /// This is done by [RxSingleBufferOperator].
 #[derive(Debug)]
@@ -98,8 +97,7 @@ pub trait RxOperator {
 ///
 /// This operator can lose some frames: if a frame is received in the kernel when
 /// the app is examining its received frames (and hence has its buffer unallowed),
-/// then the frame can be lost. Unfortunately, no alternative at the moment due to
-/// soundness issues in tried implementation.
+/// then the frame can be lost. See [RxBufferAlternatingOperator] for an alternative.
 pub struct RxSingleBufferOperator<'buf, const N: usize, S: Syscalls, C: Config = DefaultConfig> {
     buf: &'buf mut RxRingBuffer<N>,
     s: PhantomData<S>,
@@ -159,6 +157,165 @@ impl<S: Syscalls, C: Config> Ieee802154<S, C> {
                     return Ok(());
                 }
             }
+        })
+    }
+}
+
+// This module is to protect RxRingBufferInKernel private API.
+mod alternate_receive_buffers {
+    use super::*;
+
+    pub(super) struct RxRingBufferInKernel<'buf, const N: usize, S: Syscalls, C: Config> {
+        lent_buf: *mut RxRingBuffer<N>,
+        covariance_phantom: PhantomData<&'buf mut RxRingBuffer<N>>,
+        sc: PhantomData<(S, C)>,
+    }
+
+    impl<'buf, const N: usize, S: Syscalls, C: Config> Drop for RxRingBufferInKernel<'buf, N, S, C> {
+        // Unshares the buffer to prevent kernel accessing no longer valid memory.
+        fn drop(&mut self) {
+            share::scope::<AllowRw<_, DRIVER_NUM, { allow_rw::READ }>, _, _>(|handle| {
+                let _ = S::allow_rw::<C, DRIVER_NUM, { allow_rw::READ }>(handle, &mut []);
+            });
+        }
+    }
+
+    impl<'buf, const N: usize, S: Syscalls, C: Config> RxRingBufferInKernel<'buf, N, S, C> {
+        fn new(buf: &mut RxRingBuffer<N>) -> Self {
+            Self {
+                lent_buf: buf as *mut RxRingBuffer<N>,
+                covariance_phantom: PhantomData,
+                sc: PhantomData,
+            }
+        }
+
+        pub(super) unsafe fn share_initial(buf: &mut RxRingBuffer<N>) -> Result<Self, ErrorCode> {
+            let covariance_phantom = PhantomData::<&mut RxRingBuffer<N>>;
+            let lent_buf = buf as *mut RxRingBuffer<N>;
+
+            Self::share_unscoped(buf.as_mut_byte_slice())?;
+
+            Ok(Self {
+                lent_buf,
+                covariance_phantom,
+                sc: PhantomData,
+            })
+        }
+
+        unsafe fn share_unscoped(buf: &mut [u8]) -> Result<(), ErrorCode> {
+            let allow_rw = platform::AllowRw::<S, DRIVER_NUM, { allow_rw::READ }>::default();
+
+            // Safety: The buffer being allowed here is going to be enclosed in an opaque type
+            // until it's unallowed again. This prevents concurrent access to the buffer by process and kernel.
+            let allow_rw_handle = unsafe { share::Handle::new(&allow_rw) };
+
+            S::allow_rw::<C, DRIVER_NUM, { allow_rw::READ }>(allow_rw_handle, buf)?;
+
+            // This is crucial. This prevents unallowing the buffer at the end of scope.
+            // Thanks to that, some buffer is constantly allowed for kernel to write there,
+            // preventing frame loss at any point.
+            core::mem::forget(allow_rw);
+
+            Ok(())
+        }
+
+        /// Swaps the two buffers.
+        /// Shares with the kernel the alternate buffer, at the same time unsharing this buffer.
+        pub(super) fn swap(&mut self, buf: &mut &mut RxRingBuffer<N>) -> Result<(), ErrorCode> {
+            unsafe { Self::share_unscoped(buf.as_mut_byte_slice())? };
+
+            let allowed_buf = Self::new(buf);
+
+            // SAFETY: `lent_buf` was created from a mutable reference, so recreation of that mutable
+            // reference is sound. Lifetimes and aliasing rules were enforced all the time by
+            // `covariance_phantom`, which by covariance with the original mutable reference
+            // kept it valid.
+            let returned_buf = unsafe { &mut *self.lent_buf };
+
+            let no_longer_shared_kernel_buf = core::mem::replace(self, allowed_buf);
+
+            // This is crucial. This disarms the drop mechanism that would unshare the newly shared alternate buffer.
+            core::mem::forget(no_longer_shared_kernel_buf);
+
+            *buf = returned_buf;
+
+            Ok(())
+        }
+    }
+}
+use alternate_receive_buffers::RxRingBufferInKernel;
+
+/// Safe encapsulation that can receive frames from the kernel using a pair of ring buffers.
+/// See [RxRingBuffer] for more information.
+///
+/// This operator won't lose frames: if a frame is received in the kernel when
+/// the app is examining its received frames is one of the buffers, then the other buffer
+/// is allowed, so the frame won't be lost. This comes with cost: one has to pay twice
+/// as much memory to keep a pair of buffers.
+pub struct RxBufferAlternatingOperator<'buf, const N: usize, S: Syscalls, C: Config = DefaultConfig>
+{
+    buf_ours: &'buf mut RxRingBuffer<N>,
+    buf_kernels: RxRingBufferInKernel<'buf, N, S, C>,
+    s: PhantomData<S>,
+    c: PhantomData<C>,
+}
+
+impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
+    /// Creates a new [RxBufferAlternatingOperator] that can be used to receive frames.
+    pub fn new(
+        buf1: &'buf mut RxRingBuffer<N>,
+        buf2: &'buf mut RxRingBuffer<N>,
+    ) -> Result<Self, ErrorCode> {
+        Ok(Self {
+            buf_ours: buf1,
+            buf_kernels: unsafe { RxRingBufferInKernel::share_initial(buf2) }?,
+            s: PhantomData,
+            c: PhantomData,
+        })
+    }
+}
+impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
+    for RxBufferAlternatingOperator<'buf, N, S, C>
+{
+    /// Receive a new frame.
+    fn receive_frame(&mut self) -> Result<&mut Frame, ErrorCode> {
+        // First check if there are frames in buf_ours. If so, return first of them.
+        if self.buf_ours.has_frame() {
+            return Ok(self.buf_ours.next_frame());
+        }
+
+        let called: Cell<Option<(u32,)>> = Cell::new(None);
+        // If buf_ours is empty, subscribe to upcalls at this point not to lose any upcall.
+        share::scope::<(Subscribe<_, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>,), _, _>(|handle| {
+            let (subscribe,) = handle.split();
+            S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>(subscribe, &called)?;
+
+            // Swap the buffers and look again in buf_ours.
+            self.buf_kernels.swap(&mut self.buf_ours)?;
+
+            // If there's a frame, return it.
+            // If we got an upcall *before* the swap is done, then the buffer taken from kernel
+            // contains at least one frame, so we'll return here.
+            if self.buf_ours.has_frame() {
+                return Ok(self.buf_ours.next_frame());
+            }
+
+            // If nothing's there, yield wait.
+            loop {
+                S::yield_wait();
+                if let Some((_lqi,)) = called.get() {
+                    // At least one frame was received after the swap.
+                    // If the upcall had happened before the swap,
+                    // then we would have already returned above.
+                    break;
+                }
+            }
+
+            // Swap buffers again. Now there must be a frame in buf_ours.
+            self.buf_kernels.swap(&mut self.buf_ours)?;
+            assert!(self.buf_ours.has_frame());
+
+            Ok(self.buf_ours.next_frame())
         })
     }
 }
