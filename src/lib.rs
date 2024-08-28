@@ -73,6 +73,8 @@ pub mod ieee802154 {
     pub use ieee802154::{Frame, RxOperator, RxRingBuffer};
     pub type RxSingleBufferOperator<'buf, const N: usize> =
         ieee802154::RxSingleBufferOperator<'buf, N, super::runtime::TockSyscalls>;
+    pub type RxBufferAlternatingOperator<'buf, const N: usize> =
+        ieee802154::RxBufferAlternatingOperator<'buf, N, super::runtime::TockSyscalls>;
 }
 pub mod leds {
     use libtock_leds as leds;

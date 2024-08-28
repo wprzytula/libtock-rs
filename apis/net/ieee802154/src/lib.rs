@@ -200,7 +200,9 @@ impl<S: Syscalls, C: Config> Ieee802154<S, C> {
 }
 
 mod rx;
-pub use rx::{Frame, RxOperator, RxRingBuffer, RxSingleBufferOperator};
+pub use rx::{
+    Frame, RxBufferAlternatingOperator, RxOperator, RxRingBuffer, RxSingleBufferOperator,
+};
 
 /// System call configuration trait for `Ieee802154`.
 pub trait Config:
