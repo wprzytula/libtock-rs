@@ -12,7 +12,7 @@ use core::fmt::{Display, Write as _};
 use libtock::alarm::{Alarm, Milliseconds};
 // use libtock::console::Console;
 use libtock::console_lite::ConsoleLite;
-use libtock::ieee802154::{Ieee802154, RxOperator as _, RxRingBuffer, RxSingleBufferOperator};
+use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
 use libtock::runtime::{set_main, stack_size};
 use libtock::temperature::Temperature;
 
@@ -144,8 +144,10 @@ fn main() {
 
     Alarm::sleep_for(Milliseconds(5 * 1000)).unwrap();
 
-    let mut frames_buf = RxRingBuffer::<N_MOTES>::new();
-    let mut operator = RxSingleBufferOperator::new(&mut frames_buf);
+    let mut frames_buf1 = RxRingBuffer::<N_MOTES>::new();
+    let mut frames_buf2 = RxRingBuffer::<N_MOTES>::new();
+    let mut operator =
+        RxBufferAlternatingOperator::new(&mut frames_buf1, &mut frames_buf2).unwrap();
 
     let mut sequence_no = 0_usize;
     let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
