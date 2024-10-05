@@ -32,6 +32,7 @@ libtock_buzzer = { path = "apis/interface/buzzer" }
 libtock_console = { path = "apis/interface/console" }
 libtock_console_lite = { path = "apis/interface/console_lite" }
 libtock_debug_panic = { path = "panic_handlers/debug_panic" }
+libtock_future = { path = "future" }
 libtock_gpio = { path = "apis/peripherals/gpio" }
 libtock_i2c_master = { path = "apis/peripherals/i2c_master" }
 libtock_ieee802154 = { path = "apis/net/ieee802154" }
@@ -89,6 +90,7 @@ members = [
     "apis/storage/key_value",
     "demos/st7789",
     "demos/st7789-slint",
+    "future",
     "panic_handlers/debug_panic",
     "panic_handlers/small_panic",
     "platform",
