@@ -1,6 +1,7 @@
-use core::marker::PhantomData;
-
 use super::*;
+use core::marker::PhantomData;
+use libtock_alarm::Alarm;
+use libtock_future::TockFuture;
 
 /// Maximum length of a MAC frame.
 const MAX_MTU: usize = 127;
@@ -258,6 +259,8 @@ pub struct RxBufferAlternatingOperator<'buf, const N: usize, S: Syscalls, C: Con
     buf_kernels: RxRingBufferInKernel<'buf, N, S, C>,
     s: PhantomData<S>,
     c: PhantomData<C>,
+
+    upcall: Cell<Option<(u32,)>>,
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
@@ -271,6 +274,7 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
             buf_kernels: unsafe { RxRingBufferInKernel::share_initial(buf2) }?,
             s: PhantomData,
             c: PhantomData,
+            upcall: Cell::new(None),
         })
     }
 }
@@ -318,4 +322,118 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
             Ok(self.buf_ours.next_frame())
         })
     }
+}
+
+impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
+    pub fn receive_frame_fut<'operator>(
+        &'operator mut self,
+    ) -> Result<ReceivedFrameOrFut<'buf, 'operator, N, S, C>, ErrorCode> {
+        self.upcall.set(None);
+
+        // First check if there are frames in buf_ours. If so, return first of them.
+        if self.buf_ours.has_frame() {
+            return Ok(ReceivedFrameOrFut::Frame(self.buf_ours.next_frame()));
+        }
+
+        // If buf_ours is empty, subscribe to upcalls at this point not to lose any upcall.
+        let subscribe = platform::Subscribe::<
+            'operator,
+            S,
+            DRIVER_NUM,
+            { subscribe::FRAME_RECEIVED },
+        >::default();
+        let subscribe_handle = unsafe { share::Handle::new(&subscribe) };
+        S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>(
+            subscribe_handle,
+            &self.upcall,
+        )?;
+
+        // Swap the buffers and look again in buf_ours.
+        self.buf_kernels.swap(&mut self.buf_ours)?;
+
+        // If there's a frame, return it.
+        // If we got an upcall *before* the swap is done, then the buffer taken from kernel
+        // contains at least one frame, so we'll return here.
+        if self.buf_ours.has_frame() {
+            return Ok(ReceivedFrameOrFut::Frame(self.buf_ours.next_frame()));
+        }
+
+        // If nothing's there, yield wait.
+        Ok(ReceivedFrameOrFut::Fut(AlternatingOperatorFrameFut {
+            _subscribe: subscribe,
+            upcall: &self.upcall,
+            buf_ours: &mut self.buf_ours,
+            buf_kernels: &mut self.buf_kernels,
+            // operator: self,
+            s: PhantomData,
+        }))
+    }
+
+    pub fn receive_frame_timed<'operator>(
+        &'operator mut self,
+        alarm: &'_ mut Alarm<S>,
+        time: impl libtock_alarm::Convert,
+    ) -> Result<Option<&'operator mut Frame>, ErrorCode> {
+        let alarm_fut = alarm.sleep_fut(time)?;
+        match self.receive_frame_fut().unwrap() {
+            ReceivedFrameOrFut::Frame(frame) => Ok(Some(frame)),
+            ReceivedFrameOrFut::Fut(rx_fut) => {
+                // None
+                let select_fut = rx_fut.select(alarm_fut);
+                match select_fut.await_completion() {
+                    libtock_future::SelectOutput::Left(frame) => frame.map(Some),
+                    libtock_future::SelectOutput::Right(()) => Ok(None),
+                }
+            }
+        }
+    }
+}
+
+pub struct AlternatingOperatorFrameFut<
+    'buf,
+    'operator,
+    const N: usize,
+    S: Syscalls,
+    C: Config = DefaultConfig,
+> {
+    // Unsubscribes when destructor is run.
+    _subscribe: platform::Subscribe<'operator, S, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>,
+    upcall: &'operator Cell<Option<(u32,)>>,
+    buf_kernels: &'operator mut RxRingBufferInKernel<'buf, N, S, C>,
+    buf_ours: &'operator mut &'buf mut RxRingBuffer<N>,
+    // operator: &'operator mut RxBufferAlternatingOperator<'buf, N, S, C>,
+    s: PhantomData<S>,
+}
+
+impl<'buf, 'operator, const N: usize, S: Syscalls, C: Config> TockFuture<S>
+    for AlternatingOperatorFrameFut<'buf, 'operator, N, S, C>
+{
+    type Output = Result<&'operator mut Frame, ErrorCode>;
+    fn check_resolved(&self) -> bool {
+        self.upcall.get().is_some()
+    }
+
+    fn await_completion(self) -> Self::Output {
+        loop {
+            if let Some((_lqi,)) = self.upcall.get() {
+                // At least one frame was received after the swap.
+                // If the upcall had happened before the swap,
+                // then we would have already returned above.
+                break;
+            }
+            S::yield_wait();
+        }
+
+        // Swap buffers again. Now there must be a frame in buf_ours.
+        self.buf_kernels.swap(self.buf_ours)?;
+        assert!(self.buf_ours.has_frame());
+
+        Ok(self.buf_ours.next_frame())
+    }
+}
+
+pub enum ReceivedFrameOrFut<'buf, 'operator, const N: usize, S: Syscalls, C: Config = DefaultConfig>
+{
+    Frame(&'operator mut Frame),
+    Fut(AlternatingOperatorFrameFut<'buf, 'operator, N, S, C>),
 }
