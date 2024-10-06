@@ -147,7 +147,37 @@ fn main() {
     Ieee802154::radio_on().unwrap();
     assert!(Ieee802154::is_on());
 
-    Alarm::sleep_for(Milliseconds(5 * 1000)).unwrap();
+    // TODO: think how to make Alarm a singleton.
+    // Multiple Alarms would clash.
+    let mut alarm = Alarm::new();
+    writeln!(ConsoleLite::writer(), "Constructed Alarm").unwrap();
+    // writeln!(Console::writer(), "Constructed Alarm").unwrap();
+    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
+    // writeln!(ConsoleLite::writer(), "Set up alarm fut").unwrap();
+    // alarm_fut.await_completion();
+    // writeln!(ConsoleLite::writer(), "Awaited completion of alarm fut").unwrap();
+
+    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
+    // let join_fut = alarm_fut.join(ReadyFuture::new(()));
+    // join_fut.await_completion();
+    // writeln!(
+    //     ConsoleLite::writer(),
+    //     "Awaited completion of join alarm fut"
+    // )
+    // .unwrap();
+
+    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
+    // let select_fut = alarm_fut.select(PendingFuture::<()>::new());
+    // select_fut.await_completion();
+    // writeln!(
+    //     ConsoleLite::writer(),
+    //     "Awaited completion of select alarm fut"
+    // )
+    // .unwrap();
+
+    // Alarm::sleep_for(Milliseconds(5 * 1000)).unwrap();
+
+    // writeln!(ConsoleLite::writer(), "Slep t for 5 more secs.").unwrap();
 
     let mut frames_buf1 = RxRingBuffer::<N_MOTES>::new();
     let mut frames_buf2 = RxRingBuffer::<N_MOTES>::new();
@@ -189,19 +219,40 @@ fn main() {
         // For each peer...
         for _ in 0..N_MOTES - 1 {
             // Receive a frame from it.
-            let frame = operator.receive_frame().unwrap();
+            let maybe_frame = operator
+                .receive_frame_timed(&mut alarm, Milliseconds(10))
+                .unwrap();
 
-            let body_len = frame.payload_len;
-            writeln!(
-                ConsoleLite::writer(),
-                "Received frame with body of len {}: {}!\n",
-                body_len,
-                core::str::from_utf8(
-                    &frame.body[..frame.body.len() - core::mem::size_of::<usize>()]
-                )
-                .unwrap_or("<error decoding>"),
-            )
-            .unwrap();
+            struct Ascii<'a>(&'a [u8]);
+            impl Display for Ascii<'_> {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    for b in self.0.iter().copied() {
+                        let c = char::from_u32(b as u32).unwrap_or('*');
+                        f.write_char(c)?;
+                    }
+                    Ok(())
+                }
+            }
+
+            if let Some(frame) = maybe_frame {
+                let body_len = frame.payload_len as usize;
+                let raw_body = &frame.body[..body_len];
+                let decoded_frame = core::str::from_utf8(raw_body);
+                match decoded_frame {
+                    Ok(body) => {
+                        writeln!(ConsoleLite::writer(), "Received frame:\n{}\n\n", body).unwrap()
+                    }
+                    Err(err) => writeln!(
+                        ConsoleLite::writer(),
+                        "Received frame:\n<error decoding> {}, raw body:\n{}\n",
+                        err,
+                        Ascii(raw_body)
+                    )
+                    .unwrap(),
+                }
+            } else {
+                writeln!(ConsoleLite::writer(), "Timed out waiting for frame").unwrap();
+            }
         }
 
         sequence_no += 1;
