@@ -26,7 +26,9 @@ const N_MOTES: usize = 2;
 const N_SECS: u32 = 3;
 const SLEEP_TIME: Milliseconds = Milliseconds(1000 * N_SECS);
 
-const CHERRY_MOTE_ID: u32 = 116;
+fn get_cherry_id() -> Option<&'static str> {
+    option_env!("HENI_DEVICE")
+}
 
 struct TemperatureDisplay(i32);
 
@@ -109,7 +111,10 @@ impl<const N: usize> MsgBuf<N> {
         writeln!(
             w,
             msg_template!(),
-            timestamp, CHERRY_MOTE_ID, sequence_no, temperature_displayer
+            timestamp,
+            get_cherry_id().unwrap_or("<unknown id>"),
+            sequence_no,
+            temperature_displayer
         )
         .unwrap();
 
@@ -151,6 +156,12 @@ fn main() {
 
     let mut sequence_no = 0_usize;
     let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
+
+    let cherry_id = get_cherry_id()
+        .map(str::parse::<u32>)
+        .transpose()
+        .unwrap()
+        .unwrap_or(0);
 
     loop {
         // Measure temperature.
