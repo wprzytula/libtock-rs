@@ -85,12 +85,20 @@ impl<const N: usize> RxRingBuffer<N> {
     }
 }
 
-pub trait RxOperator {
+pub trait RxOperator<S: Syscalls> {
     /// Receive one new frame.
     ///
     /// Logically pop one frame out of the ring buffer and provide mutable access to it.
     /// If no frame is ready for reception, yield_wait to kernel until one is available.
     fn receive_frame(&mut self) -> Result<&mut Frame, ErrorCode>;
+
+    /// Same as `receive_frame`, but if no frame is available until the specified timeout,
+    /// `None` is returned.
+    fn receive_frame_timed<'operator>(
+        &'operator mut self,
+        alarm: &'_ mut Alarm<S>,
+        time: impl libtock_alarm::Convert,
+    ) -> Result<Option<&'operator mut Frame>, ErrorCode>;
 }
 
 /// Safe encapsulation that can receive frames from the kernel using a single ring buffer.
@@ -115,7 +123,7 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxSingleBufferOperator<'buf, 
         }
     }
 }
-impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
+impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator<S>
     for RxSingleBufferOperator<'buf, N, S, C>
 {
     fn receive_frame(&mut self) -> Result<&mut Frame, ErrorCode> {
@@ -130,6 +138,14 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
             // i.e. when it increments `read_index`.
             Ok(self.buf.next_frame())
         }
+    }
+
+    fn receive_frame_timed<'operator>(
+        &'operator mut self,
+        alarm: &'_ mut Alarm<S>,
+        time: impl libtock_alarm::Convert,
+    ) -> Result<Option<&'operator mut Frame>, ErrorCode> {
+        todo!()
     }
 }
 
@@ -278,7 +294,7 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
         })
     }
 }
-impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
+impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator<S>
     for RxBufferAlternatingOperator<'buf, N, S, C>
 {
     /// Receive a new frame.
@@ -322,12 +338,23 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxOperator
             Ok(self.buf_ours.next_frame())
         })
     }
+
+    fn receive_frame_timed<'operator>(
+        &'operator mut self,
+        alarm: &'_ mut Alarm<S>,
+        time: impl libtock_alarm::Convert,
+    ) -> Result<Option<&'operator mut Frame>, ErrorCode> {
+        self.receive_frame_fut()?.await_frame_timed(alarm, time)
+    }
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
     pub fn receive_frame_fut<'operator>(
         &'operator mut self,
-    ) -> Result<ReceivedFrameOrFut<'buf, 'operator, N, S, C>, ErrorCode> {
+    ) -> Result<
+        ReceivedFrameOrFut<'operator, S, AlternatingOperatorFrameFut<'buf, 'operator, N, S, C>>,
+        ErrorCode,
+    > {
         self.upcall.set(None);
 
         // First check if there are frames in buf_ours. If so, return first of them.
@@ -359,33 +386,16 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
         }
 
         // If nothing's there, yield wait.
-        Ok(ReceivedFrameOrFut::Fut(AlternatingOperatorFrameFut {
-            _subscribe: subscribe,
-            upcall: &self.upcall,
-            buf_ours: &mut self.buf_ours,
-            buf_kernels: &mut self.buf_kernels,
-            // operator: self,
-            s: PhantomData,
-        }))
-    }
-
-    pub fn receive_frame_timed<'operator>(
-        &'operator mut self,
-        alarm: &'_ mut Alarm<S>,
-        time: impl libtock_alarm::Convert,
-    ) -> Result<Option<&'operator mut Frame>, ErrorCode> {
-        let alarm_fut = alarm.sleep_fut(time)?;
-        match self.receive_frame_fut().unwrap() {
-            ReceivedFrameOrFut::Frame(frame) => Ok(Some(frame)),
-            ReceivedFrameOrFut::Fut(rx_fut) => {
-                // None
-                let select_fut = rx_fut.select(alarm_fut);
-                match select_fut.await_completion() {
-                    libtock_future::SelectOutput::Left(frame) => frame.map(Some),
-                    libtock_future::SelectOutput::Right(()) => Ok(None),
-                }
-            }
-        }
+        Ok(ReceivedFrameOrFut::Fut((
+            AlternatingOperatorFrameFut {
+                _subscribe: subscribe,
+                upcall: &self.upcall,
+                buf_ours: &mut self.buf_ours,
+                buf_kernels: &mut self.buf_kernels,
+                s: PhantomData,
+            },
+            PhantomData,
+        )))
     }
 }
 
@@ -432,8 +442,36 @@ impl<'buf, 'operator, const N: usize, S: Syscalls, C: Config> TockFuture<S>
     }
 }
 
-pub enum ReceivedFrameOrFut<'buf, 'operator, const N: usize, S: Syscalls, C: Config = DefaultConfig>
-{
+pub enum ReceivedFrameOrFut<
+    'operator,
+    S: Syscalls,
+    TockFut: TockFuture<S, Output = Result<&'operator mut Frame, ErrorCode>>,
+> {
     Frame(&'operator mut Frame),
-    Fut(AlternatingOperatorFrameFut<'buf, 'operator, N, S, C>),
+    Fut((TockFut, PhantomData<S>)),
+}
+
+impl<
+        'operator,
+        S: Syscalls,
+        TockFut: TockFuture<S, Output = Result<&'operator mut Frame, ErrorCode>>,
+    > ReceivedFrameOrFut<'operator, S, TockFut>
+{
+    fn await_frame_timed(
+        self,
+        alarm: &'_ mut Alarm<S>,
+        time: impl libtock_alarm::Convert,
+    ) -> Result<Option<&'operator mut Frame>, ErrorCode> {
+        let alarm_fut = alarm.sleep_fut(time)?;
+        match self {
+            ReceivedFrameOrFut::Frame(frame) => Ok(Some(frame)),
+            ReceivedFrameOrFut::Fut((rx_fut, _)) => {
+                let select_fut = rx_fut.select(alarm_fut);
+                match select_fut.await_completion() {
+                    libtock_future::SelectOutput::Left(frame) => frame.map(Some),
+                    libtock_future::SelectOutput::Right(()) => Ok(None),
+                }
+            }
+        }
+    }
 }
