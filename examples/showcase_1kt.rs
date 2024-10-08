@@ -150,34 +150,6 @@ fn main() {
     // TODO: think how to make Alarm a singleton.
     // Multiple Alarms would clash.
     let mut alarm = Alarm::new();
-    writeln!(ConsoleLite::writer(), "Constructed Alarm").unwrap();
-    // writeln!(Console::writer(), "Constructed Alarm").unwrap();
-    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
-    // writeln!(ConsoleLite::writer(), "Set up alarm fut").unwrap();
-    // alarm_fut.await_completion();
-    // writeln!(ConsoleLite::writer(), "Awaited completion of alarm fut").unwrap();
-
-    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
-    // let join_fut = alarm_fut.join(ReadyFuture::new(()));
-    // join_fut.await_completion();
-    // writeln!(
-    //     ConsoleLite::writer(),
-    //     "Awaited completion of join alarm fut"
-    // )
-    // .unwrap();
-
-    // let alarm_fut = alarm.sleep_fut(Milliseconds(5000)).unwrap();
-    // let select_fut = alarm_fut.select(PendingFuture::<()>::new());
-    // select_fut.await_completion();
-    // writeln!(
-    //     ConsoleLite::writer(),
-    //     "Awaited completion of select alarm fut"
-    // )
-    // .unwrap();
-
-    // Alarm::sleep_for(Milliseconds(5 * 1000)).unwrap();
-
-    // writeln!(ConsoleLite::writer(), "Slep t for 5 more secs.").unwrap();
 
     let mut frames_buf1 = RxRingBuffer::<N_MOTES>::new();
     let mut frames_buf2 = RxRingBuffer::<N_MOTES>::new();
