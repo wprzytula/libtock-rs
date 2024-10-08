@@ -1,6 +1,8 @@
 #![no_std]
 
 use core::cell::Cell;
+use core::marker::PhantomData;
+use libtock_future::TockFuture;
 use libtock_platform as platform;
 use libtock_platform::share;
 use libtock_platform::{DefaultConfig, ErrorCode, Syscalls};
@@ -15,7 +17,21 @@ use libtock_platform::{DefaultConfig, ErrorCode, Syscalls};
 /// Alarm::sleep(Alarm::Milliseconds(2500));
 /// ```
 
-pub struct Alarm<S: Syscalls, C: platform::subscribe::Config = DefaultConfig>(S, C);
+pub struct Alarm<S: Syscalls, C: platform::subscribe::Config = DefaultConfig> {
+    syscalls: PhantomData<S>,
+    config: PhantomData<C>,
+    upcall: Cell<Option<(u32, u32)>>,
+}
+
+impl<S: Syscalls, C: platform::subscribe::Config> Alarm<S, C> {
+    pub fn new() -> Self {
+        Self {
+            syscalls: PhantomData,
+            config: PhantomData,
+            upcall: Cell::new(None),
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Hz(pub u32);
@@ -57,6 +73,36 @@ impl Convert for Milliseconds {
     }
 }
 
+pub struct AlarmFut<'alarm, S: Syscalls> {
+    // Unsubscribes when destructor is run.
+    _subscribe: platform::Subscribe<'alarm, S, DRIVER_NUM, { subscribe::CALLBACK }>,
+    called: &'alarm Cell<Option<(u32, u32)>>,
+    s: PhantomData<S>,
+}
+
+impl<'scope, S: Syscalls> TockFuture<S> for AlarmFut<'scope, S> {
+    type Output = ();
+    fn check_resolved(&self) -> bool {
+        self.called.get().is_some()
+    }
+
+    fn await_completion(self) -> Self::Output {
+        loop {
+            if self.check_resolved() {
+                break;
+            }
+            S::yield_wait();
+        }
+    }
+}
+
+// Not necessary, because _subscribe does this itself.
+// impl<S: Syscalls> Drop for AlarmFut<'_, S> {
+//     fn drop(&mut self) {
+//         S::unsubscribe(DRIVER_NUM, subscribe::CALLBACK)
+//     }
+// }
+
 impl<S: Syscalls, C: platform::subscribe::Config> Alarm<S, C> {
     /// Run a check against the console capsule to ensure it is present.
     #[inline(always)]
@@ -79,6 +125,34 @@ impl<S: Syscalls, C: platform::subscribe::Config> Alarm<S, C> {
         let freq = (Self::get_frequency()?).0 as u64;
 
         Ok(ticks.saturating_div(freq / 1000))
+    }
+
+    pub fn sleep_fut<'alarm, T: Convert>(
+        &'alarm mut self,
+        time: T,
+    ) -> Result<AlarmFut<'alarm, S>, ErrorCode> {
+        self.upcall.set(None);
+
+        let freq = Self::get_frequency()?;
+        let ticks = time.to_ticks(freq);
+
+        let subscribe =
+            platform::Subscribe::<'alarm, S, DRIVER_NUM, { subscribe::CALLBACK }>::default();
+        let subscribe_handle = unsafe { share::Handle::new(&subscribe) };
+        S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::CALLBACK }>(
+            subscribe_handle,
+            &self.upcall,
+        )?;
+
+        S::command(DRIVER_NUM, command::SET_RELATIVE, ticks.0, 0)
+            .to_result()
+            .map(|_when: u32| ())?;
+
+        Ok(AlarmFut {
+            _subscribe: subscribe,
+            called: &self.upcall,
+            s: PhantomData,
+        })
     }
 
     pub fn sleep_for<T: Convert>(time: T) -> Result<(), ErrorCode> {

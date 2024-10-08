@@ -7,6 +7,7 @@ use std::process::Command;
 fn get_platform_architecture(platform: &str) -> Option<&'static str> {
     match platform {
         "raspberry_pi_pico" | "nano_rp2040_connect" => Some("cortex-m0"),
+        "cc2650dk" => Some("cortex-m3"),
         "apollo3"
         | "clue_nrf52840"
         | "hail"

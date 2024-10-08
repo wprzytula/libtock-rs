@@ -1,5 +1,9 @@
 {
   "editor.formatOnSave": true,
   "rust.all_targets": true,
-  "rust.clippy_preference": "on"
+  "rust.clippy_preference": "on",
+  "rust-analyzer.server.extraEnv": {
+    "LIBTOCK_LINKER_FLASH": "0x12000",
+    "LIBTOCK_LINKER_RAM": "0x20003000",
+  },
 }
