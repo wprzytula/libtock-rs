@@ -180,8 +180,9 @@ fn main() {
 
         writeln!(
             ConsoleLite::writer(),
-            "Transmitted frame {}!\n",
-            sequence_no
+            "Transmitted frame {} of len {}!\n",
+            sequence_no,
+            msg_len,
         )
         .unwrap();
 
@@ -212,13 +213,20 @@ fn main() {
                 let decoded_frame = core::str::from_utf8(raw_body);
                 match decoded_frame {
                     Ok(body) => {
-                        writeln!(ConsoleLite::writer(), "Received frame:\n{}\n\n", body).unwrap()
+                        writeln!(
+                            ConsoleLite::writer(),
+                            "Received frame (len={}):\n{}\n\n",
+                            body_len,
+                            body
+                        ).unwrap()
                     }
                     Err(err) => writeln!(
                         ConsoleLite::writer(),
-                        "Received frame:\n<error decoding> {}, raw body:\n{}\n",
+                        "Received frame (len={}):\n<error decoding> {}, parsed part: {}\n, remaining raw body:\n{:?}\n",
+                        body_len,
                         err,
-                        Ascii(raw_body)
+                        Ascii(raw_body),
+                        &raw_body[err.valid_up_to()..],
                     )
                     .unwrap(),
                 }
