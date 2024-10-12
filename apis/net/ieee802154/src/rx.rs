@@ -1,7 +1,13 @@
 use super::*;
-use core::marker::PhantomData;
+use core::{
+    cell::RefCell,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+};
 use libtock_alarm::Alarm;
 use libtock_future::TockFuture;
+use libtock_platform::{subscribe::OneId, Upcall};
 
 /// Maximum length of a MAC frame.
 const MAX_MTU: usize = 127;
@@ -23,7 +29,7 @@ const EMPTY_FRAME: Frame = Frame {
 };
 
 /// The ring buffer that is shared with kernel using allow-rw syscall, with kernel acting
-/// as a producer of frames and we acting a consumer.
+/// as a producer of frames and us acting as a consumer.
 
 /// The `N` parameter specifies the capacity of the buffer in number of frames.
 /// Unfortunately, due to a design flaw of the ring buffer, it can never be fully utilised,
@@ -85,7 +91,7 @@ impl<const N: usize> RxRingBuffer<N> {
     }
 }
 
-pub trait RxOperator<'operator, S: Syscalls> {
+pub trait RxOperator<'buf: 'operator, 'operator, S: Syscalls> {
     /// Receive one new frame.
     ///
     /// Logically pop one frame out of the ring buffer and provide mutable access to it.
@@ -111,6 +117,26 @@ pub trait RxOperator<'operator, S: Syscalls> {
     fn receive_frame_fut(
         &'operator mut self,
     ) -> Result<ReceivedFrameOrFut<'operator, S, Self::Fut>, ErrorCode>;
+
+    /// Registers callback to be called upon frame received, with each new frame.
+    fn register_rx_callback(
+        self: Pin<&'operator mut Self>,
+        rx_callback: Option<&'buf mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
+    ) -> Result<(), ErrorCode>;
+}
+
+struct RxCallback<'a>(<Self as Deref>::Target);
+impl<'a> Deref for RxCallback<'a> {
+    type Target = &'a mut dyn FnMut(Result<&mut Frame, ErrorCode>);
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for RxCallback<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 /// Safe encapsulation that can receive frames from the kernel using a single ring buffer.
@@ -124,6 +150,7 @@ pub struct RxSingleBufferOperator<'buf, const N: usize, S: Syscalls, C: Config =
     s: PhantomData<S>,
     c: PhantomData<C>,
     upcall: Cell<Option<(u32,)>>,
+    callback: Option<&'buf mut dyn FnMut(&mut Frame)>,
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxSingleBufferOperator<'buf, N, S, C> {
@@ -134,10 +161,11 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxSingleBufferOperator<'buf, 
             s: PhantomData,
             c: PhantomData,
             upcall: Cell::new(None),
+            callback: None,
         }
     }
 }
-impl<'buf, 'operator, const N: usize, S, C> RxOperator<'operator, S>
+impl<'buf, 'operator, const N: usize, S, C> RxOperator<'buf, 'operator, S>
     for RxSingleBufferOperator<'buf, N, S, C>
 where
     'buf: 'operator,
@@ -199,6 +227,15 @@ where
 
             todo!()
         }
+    }
+
+    fn register_rx_callback(
+        self: Pin<&'operator mut Self>,
+        rx_callback: Option<&mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
+    ) -> Result<(), ErrorCode> {
+        // self.callback = rx_callback;
+        todo!();
+        Ok(())
     }
 }
 
@@ -357,12 +394,13 @@ use alternate_receive_buffers::RxRingBufferInKernel;
 /// as much memory to keep a pair of buffers.
 pub struct RxBufferAlternatingOperator<'buf, const N: usize, S: Syscalls, C: Config = DefaultConfig>
 {
-    buf_ours: &'buf mut RxRingBuffer<N>,
-    buf_kernels: RxRingBufferInKernel<'buf, N, S, C>,
+    buf_ours: RefCell<&'buf mut RxRingBuffer<N>>,
+    buf_kernels: RefCell<RxRingBufferInKernel<'buf, N, S, C>>,
     s: PhantomData<S>,
     c: PhantomData<C>,
 
     upcall: Cell<Option<(u32,)>>,
+    callback: RefCell<Option<RxCallback<'buf>>>,
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
@@ -370,17 +408,50 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
     pub fn new(
         buf1: &'buf mut RxRingBuffer<N>,
         buf2: &'buf mut RxRingBuffer<N>,
+        // callback: Option<RxCallback<'buf>>,
     ) -> Result<Self, ErrorCode> {
+        let buf_kernels = unsafe { RxRingBufferInKernel::share_initial(buf2) }?;
+
         Ok(Self {
-            buf_ours: buf1,
-            buf_kernels: unsafe { RxRingBufferInKernel::share_initial(buf2) }?,
+            buf_ours: RefCell::new(buf1),
+            buf_kernels: RefCell::new(buf_kernels),
             s: PhantomData,
             c: PhantomData,
             upcall: Cell::new(None),
+            callback: RefCell::new(None),
         })
     }
 }
-impl<'buf, 'operator, const N: usize, S, C> RxOperator<'operator, S>
+
+impl<'buf, 'operator, const N: usize, S, C> Upcall<OneId<DRIVER_NUM, { subscribe::FRAME_RECEIVED }>>
+    for RxBufferAlternatingOperator<'buf, N, S, C>
+where
+    'buf: 'operator,
+    S: Syscalls + 'operator,
+    C: Config + 'operator,
+{
+    fn upcall(&self, _lqi: u32, _arg1: u32, _arg2: u32) {
+        if let Some(ref mut callback) = self.callback.borrow_mut().deref_mut() {
+            let mut buf_ours = self.buf_ours.borrow_mut();
+            while buf_ours.has_frame() {
+                callback(Ok(buf_ours.next_frame()));
+            }
+
+            // Swap the buffers and look again in buf_ours.
+            let mut buf_kernels = self.buf_kernels.borrow_mut();
+            if let Err(e) = buf_kernels.swap(&mut buf_ours) {
+                callback(Err(e));
+                return;
+            }
+
+            while buf_ours.has_frame() {
+                callback(Ok(buf_ours.next_frame()));
+            }
+        }
+    }
+}
+
+impl<'buf, 'operator, const N: usize, S, C> RxOperator<'buf, 'operator, S>
     for RxBufferAlternatingOperator<'buf, N, S, C>
 where
     'buf: 'operator,
@@ -478,6 +549,14 @@ where
             },
             PhantomData,
         )))
+    }
+
+    fn register_rx_callback(
+        self: Pin<&'operator mut Self>,
+        rx_callback: Option<&'buf mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
+    ) -> Result<(), ErrorCode> {
+        *self.callback.borrow_mut() = rx_callback.map(RxCallback);
+        Ok(())
     }
 }
 
