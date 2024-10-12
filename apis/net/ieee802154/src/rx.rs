@@ -137,13 +137,12 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxSingleBufferOperator<'buf, 
         }
     }
 }
-impl<
-        'buf: 'operator,
-        'operator,
-        const N: usize,
-        S: Syscalls + 'operator,
-        C: Config + 'operator,
-    > RxOperator<'operator, S> for RxSingleBufferOperator<'buf, N, S, C>
+impl<'buf, 'operator, const N: usize, S, C> RxOperator<'operator, S>
+    for RxSingleBufferOperator<'buf, N, S, C>
+where
+    'buf: 'operator,
+    S: Syscalls + 'operator,
+    C: Config + 'operator,
 {
     fn receive_frame(&mut self) -> Result<&mut Frame, ErrorCode> {
         if self.buf.has_frame() {
@@ -381,13 +380,12 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
         })
     }
 }
-impl<
-        'buf: 'operator,
-        'operator,
-        const N: usize,
-        S: Syscalls + 'operator,
-        C: Config + 'operator,
-    > RxOperator<'operator, S> for RxBufferAlternatingOperator<'buf, N, S, C>
+impl<'buf, 'operator, const N: usize, S, C> RxOperator<'operator, S>
+    for RxBufferAlternatingOperator<'buf, N, S, C>
+where
+    'buf: 'operator,
+    S: Syscalls + 'operator,
+    C: Config + 'operator,
 {
     /// Receive a new frame.
     fn receive_frame(&'operator mut self) -> Result<&mut Frame, ErrorCode> {
