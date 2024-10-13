@@ -387,7 +387,6 @@ pub struct RxBufferAlternatingOperator<'buf, const N: usize, S: Syscalls, C: Con
     _pinned: PhantomPinned,
 
     upcall: Cell<Option<(u32,)>>,
-    callback: MapCell<RxCallback<'buf>>,
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
@@ -405,7 +404,6 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
             s: PhantomData,
             c: PhantomData,
             upcall: Cell::new(None),
-            callback: MapCell::empty(),
             _pinned: PhantomPinned,
         })
     }
@@ -588,7 +586,7 @@ impl<
     }
 }
 
-pub struct RxBufferAlternatingOperatorCallbackGuard<
+pub struct RxBufferAlternatingOperatorScopedRx<
     'buf: 'operator,
     'operator,
     const N: usize,
@@ -596,24 +594,29 @@ pub struct RxBufferAlternatingOperatorCallbackGuard<
     C: Config = DefaultConfig,
 > {
     operator: MapCell<&'operator mut RxBufferAlternatingOperator<'buf, N, S, C>>,
+    callback: MapCell<RxCallback<'operator>>,
 }
 
 impl<'buf, 'operator, const N: usize, S, C>
-    RxBufferAlternatingOperatorCallbackGuard<'buf, 'operator, N, S, C>
+    RxBufferAlternatingOperatorScopedRx<'buf, 'operator, N, S, C>
 where
     'buf: 'operator,
     S: Syscalls + 'operator,
     C: Config + 'operator,
 {
-    fn new(operator: &'operator mut RxBufferAlternatingOperator<'buf, N, S, C>) -> Self {
+    fn new(
+        operator: &'operator mut RxBufferAlternatingOperator<'buf, N, S, C>,
+        rx_callback: RxCallback<'operator>,
+    ) -> Self {
         Self {
             operator: MapCell::new(operator),
+            callback: MapCell::new(rx_callback),
         }
     }
 }
 
 impl<'buf, 'operator, const N: usize, S, C> Upcall<OneId<DRIVER_NUM, { subscribe::FRAME_RECEIVED }>>
-    for RxBufferAlternatingOperatorCallbackGuard<'buf, 'operator, N, S, C>
+    for RxBufferAlternatingOperatorScopedRx<'buf, 'operator, N, S, C>
 where
     'buf: 'operator,
     S: Syscalls + 'operator,
@@ -621,7 +624,7 @@ where
 {
     fn upcall(&self, _lqi: u32, _arg1: u32, _arg2: u32) {
         self.operator.map(|operator| {
-            operator.callback.map(|callback| {
+            self.callback.map(|callback| {
                 while operator.buf_ours.has_frame() {
                     callback(Ok(operator.buf_ours.next_frame()));
                 }
@@ -640,19 +643,18 @@ where
     }
 }
 
-impl<'buf, const N: usize, S, C> RxBufferAlternatingOperator<'buf, N, S, C>
+impl<'operator, 'buf: 'operator, const N: usize, S, C> RxBufferAlternatingOperator<'buf, N, S, C>
 where
     S: Syscalls,
     C: Config,
 {
     pub fn rx_scope<ResT>(
-        &mut self,
-        rx_callback: &'buf mut (dyn FnMut(Result<&mut Frame, ErrorCode>)),
+        &'operator mut self,
+        rx_callback: &'operator mut (dyn FnMut(Result<&mut Frame, ErrorCode>)),
         scoped_code: impl FnOnce() -> ResT,
     ) -> Result<ResT, ErrorCode> {
-        self.callback.put(RxCallback(rx_callback));
-        let guard: RxBufferAlternatingOperatorCallbackGuard<'_, '_, N, S, C> =
-            RxBufferAlternatingOperatorCallbackGuard::new(self);
+        let guard: RxBufferAlternatingOperatorScopedRx<'_, '_, N, S, C> =
+            RxBufferAlternatingOperatorScopedRx::new(self, RxCallback(rx_callback));
         let res = share::scope::<(Subscribe<_, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>,), _, _>(
             |handle| {
                 let (subscribe,) = handle.split();

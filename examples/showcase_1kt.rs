@@ -159,6 +159,11 @@ fn main() {
         .unwrap_or(0);
     let sleep_len = Milliseconds(N_SECS * 1000 + cherry_id);
 
+    let mut frames_buf1 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
+    let mut frames_buf2 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
+    let mut operator =
+        RxBufferAlternatingOperator::new(&mut frames_buf1, &mut frames_buf2).unwrap();
+
     let mut rx_callback = |frame_res: Result<&mut Frame, ErrorCode>| {
         let frame = frame_res.unwrap();
 
@@ -196,11 +201,6 @@ fn main() {
             .unwrap(),
         }
     };
-
-    let mut frames_buf1 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
-    let mut frames_buf2 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
-    let mut operator =
-        RxBufferAlternatingOperator::new(&mut frames_buf1, &mut frames_buf2).unwrap();
 
     operator
         .rx_scope(&mut rx_callback, || {
