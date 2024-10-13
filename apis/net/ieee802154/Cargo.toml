@@ -9,6 +9,7 @@ rust-version.workspace = true
 description = "libtock raw IEEE 802.15.4 stack driver"
 
 [dependencies]
+tock-cells = { path = "../../../tock/libraries/tock-cells" }
 libtock_alarm = { path = "../../peripherals/alarm" }
 libtock_platform = { path = "../../../platform" }
 libtock_future = { path = "../../../future" }

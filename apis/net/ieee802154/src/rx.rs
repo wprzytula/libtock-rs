@@ -1,7 +1,7 @@
 use super::*;
 use core::{
     cell::RefCell,
-    marker::PhantomData,
+    marker::{PhantomData, PhantomPinned},
     ops::{Deref, DerefMut},
     pin::Pin,
 };
@@ -117,12 +117,6 @@ pub trait RxOperator<'buf: 'operator, 'operator, S: Syscalls> {
     fn receive_frame_fut(
         &'operator mut self,
     ) -> Result<ReceivedFrameOrFut<'operator, S, Self::Fut>, ErrorCode>;
-
-    /// Registers callback to be called upon frame received, with each new frame.
-    fn register_rx_callback(
-        self: Pin<&'operator mut Self>,
-        rx_callback: Option<&'buf mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
-    ) -> Result<(), ErrorCode>;
 }
 
 struct RxCallback<'a>(<Self as Deref>::Target);
@@ -227,15 +221,6 @@ where
 
             todo!()
         }
-    }
-
-    fn register_rx_callback(
-        self: Pin<&'operator mut Self>,
-        rx_callback: Option<&mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
-    ) -> Result<(), ErrorCode> {
-        // self.callback = rx_callback;
-        todo!();
-        Ok(())
     }
 }
 
@@ -384,6 +369,7 @@ mod alternate_receive_buffers {
     }
 }
 use alternate_receive_buffers::RxRingBufferInKernel;
+use tock_cells::map_cell::MapCell;
 
 /// Safe encapsulation that can receive frames from the kernel using a pair of ring buffers.
 /// See [RxRingBuffer] for more information.
@@ -394,13 +380,14 @@ use alternate_receive_buffers::RxRingBufferInKernel;
 /// as much memory to keep a pair of buffers.
 pub struct RxBufferAlternatingOperator<'buf, const N: usize, S: Syscalls, C: Config = DefaultConfig>
 {
-    buf_ours: RefCell<&'buf mut RxRingBuffer<N>>,
-    buf_kernels: RefCell<RxRingBufferInKernel<'buf, N, S, C>>,
+    buf_ours: &'buf mut RxRingBuffer<N>,
+    buf_kernels: RxRingBufferInKernel<'buf, N, S, C>,
     s: PhantomData<S>,
     c: PhantomData<C>,
+    _pinned: PhantomPinned,
 
     upcall: Cell<Option<(u32,)>>,
-    callback: RefCell<Option<RxCallback<'buf>>>,
+    callback: MapCell<RxCallback<'buf>>,
 }
 
 impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'buf, N, S, C> {
@@ -413,41 +400,14 @@ impl<'buf, const N: usize, S: Syscalls, C: Config> RxBufferAlternatingOperator<'
         let buf_kernels = unsafe { RxRingBufferInKernel::share_initial(buf2) }?;
 
         Ok(Self {
-            buf_ours: RefCell::new(buf1),
-            buf_kernels: RefCell::new(buf_kernels),
+            buf_ours: buf1,
+            buf_kernels,
             s: PhantomData,
             c: PhantomData,
             upcall: Cell::new(None),
-            callback: RefCell::new(None),
+            callback: MapCell::empty(),
+            _pinned: PhantomPinned,
         })
-    }
-}
-
-impl<'buf, 'operator, const N: usize, S, C> Upcall<OneId<DRIVER_NUM, { subscribe::FRAME_RECEIVED }>>
-    for RxBufferAlternatingOperator<'buf, N, S, C>
-where
-    'buf: 'operator,
-    S: Syscalls + 'operator,
-    C: Config + 'operator,
-{
-    fn upcall(&self, _lqi: u32, _arg1: u32, _arg2: u32) {
-        if let Some(ref mut callback) = self.callback.borrow_mut().deref_mut() {
-            let mut buf_ours = self.buf_ours.borrow_mut();
-            while buf_ours.has_frame() {
-                callback(Ok(buf_ours.next_frame()));
-            }
-
-            // Swap the buffers and look again in buf_ours.
-            let mut buf_kernels = self.buf_kernels.borrow_mut();
-            if let Err(e) = buf_kernels.swap(&mut buf_ours) {
-                callback(Err(e));
-                return;
-            }
-
-            while buf_ours.has_frame() {
-                callback(Ok(buf_ours.next_frame()));
-            }
-        }
     }
 }
 
@@ -550,14 +510,6 @@ where
             PhantomData,
         )))
     }
-
-    fn register_rx_callback(
-        self: Pin<&'operator mut Self>,
-        rx_callback: Option<&'buf mut dyn FnMut(Result<&mut Frame, ErrorCode>)>,
-    ) -> Result<(), ErrorCode> {
-        *self.callback.borrow_mut() = rx_callback.map(RxCallback);
-        Ok(())
-    }
 }
 
 pub struct AlternatingOperatorFrameFut<
@@ -572,7 +524,6 @@ pub struct AlternatingOperatorFrameFut<
     upcall: &'operator Cell<Option<(u32,)>>,
     buf_kernels: &'operator mut RxRingBufferInKernel<'buf, N, S, C>,
     buf_ours: &'operator mut &'buf mut RxRingBuffer<N>,
-    // operator: &'operator mut RxBufferAlternatingOperator<'buf, N, S, C>,
     s: PhantomData<S>,
 }
 
@@ -634,5 +585,84 @@ impl<
                 }
             }
         }
+    }
+}
+
+pub struct RxBufferAlternatingOperatorCallbackGuard<
+    'buf: 'operator,
+    'operator,
+    const N: usize,
+    S: Syscalls,
+    C: Config = DefaultConfig,
+> {
+    operator: MapCell<&'operator mut RxBufferAlternatingOperator<'buf, N, S, C>>,
+}
+
+impl<'buf, 'operator, const N: usize, S, C>
+    RxBufferAlternatingOperatorCallbackGuard<'buf, 'operator, N, S, C>
+where
+    'buf: 'operator,
+    S: Syscalls + 'operator,
+    C: Config + 'operator,
+{
+    fn new(operator: &'operator mut RxBufferAlternatingOperator<'buf, N, S, C>) -> Self {
+        Self {
+            operator: MapCell::new(operator),
+        }
+    }
+}
+
+impl<'buf, 'operator, const N: usize, S, C> Upcall<OneId<DRIVER_NUM, { subscribe::FRAME_RECEIVED }>>
+    for RxBufferAlternatingOperatorCallbackGuard<'buf, 'operator, N, S, C>
+where
+    'buf: 'operator,
+    S: Syscalls + 'operator,
+    C: Config + 'operator,
+{
+    fn upcall(&self, _lqi: u32, _arg1: u32, _arg2: u32) {
+        self.operator.map(|operator| {
+            operator.callback.map(|callback| {
+                while operator.buf_ours.has_frame() {
+                    callback(Ok(operator.buf_ours.next_frame()));
+                }
+
+                // Swap the buffers and look again in buf_ours.
+                if let Err(e) = operator.buf_kernels.swap(&mut operator.buf_ours) {
+                    callback(Err(e));
+                    return;
+                }
+
+                while operator.buf_ours.has_frame() {
+                    callback(Ok(operator.buf_ours.next_frame()));
+                }
+            });
+        });
+    }
+}
+
+impl<'buf, const N: usize, S, C> RxBufferAlternatingOperator<'buf, N, S, C>
+where
+    S: Syscalls,
+    C: Config,
+{
+    pub fn rx_scope<ResT>(
+        &mut self,
+        rx_callback: &'buf mut (dyn FnMut(Result<&mut Frame, ErrorCode>)),
+        scoped_code: impl FnOnce() -> ResT,
+    ) -> Result<ResT, ErrorCode> {
+        self.callback.put(RxCallback(rx_callback));
+        let guard: RxBufferAlternatingOperatorCallbackGuard<'_, '_, N, S, C> =
+            RxBufferAlternatingOperatorCallbackGuard::new(self);
+        let res = share::scope::<(Subscribe<_, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>,), _, _>(
+            |handle| {
+                let (subscribe,) = handle.split();
+                S::subscribe::<_, _, C, DRIVER_NUM, { subscribe::FRAME_RECEIVED }>(
+                    subscribe, &guard,
+                )?;
+                Ok(scoped_code())
+            },
+        );
+
+        res
     }
 }

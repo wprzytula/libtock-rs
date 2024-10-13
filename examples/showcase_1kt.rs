@@ -15,16 +15,18 @@ use libtock::console_lite::ConsoleLite;
 use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
 use libtock::runtime::{set_main, stack_size};
 use libtock::temperature::Temperature;
+use libtock_ieee802154::Frame;
+use libtock_platform::ErrorCode;
 
 set_main! {main}
 stack_size! {0xA00}
 
-/// Number of CherryMotes executing this app at the same time.
-const N_MOTES: usize = 2;
+/// Number of frames that can fit the userspace frame buffer.
+const BUF_SIZE: usize = 2;
 
 /// Interval between frame transmissions.
 const N_SECS: u32 = 3;
-const SLEEP_TIME: Milliseconds = Milliseconds(1000 * N_SECS);
+// const SLEEP_TIME: Milliseconds = Milliseconds(1000 * N_SECS);
 
 fn get_cherry_id() -> Option<&'static str> {
     option_env!("HENI_DEVICE")
@@ -147,15 +149,6 @@ fn main() {
     Ieee802154::radio_on().unwrap();
     assert!(Ieee802154::is_on());
 
-    // TODO: think how to make Alarm a singleton.
-    // Multiple Alarms would clash.
-    let mut alarm = Alarm::new();
-
-    let mut frames_buf1 = RxRingBuffer::<N_MOTES>::new();
-    let mut frames_buf2 = RxRingBuffer::<N_MOTES>::new();
-    let mut operator =
-        RxBufferAlternatingOperator::new(&mut frames_buf1, &mut frames_buf2).unwrap();
-
     let mut sequence_no = 0_usize;
     let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
 
@@ -164,77 +157,79 @@ fn main() {
         .transpose()
         .unwrap()
         .unwrap_or(0);
+    let sleep_len = Milliseconds(N_SECS * 1000 + cherry_id);
 
-    loop {
-        // Measure temperature.
-        let temperature_centigrades_celcius = Temperature::read_temperature_sync().unwrap();
+    let mut rx_callback = |frame_res: Result<&mut Frame, ErrorCode>| {
+        let frame = frame_res.unwrap();
 
-        // Get current time.
-        let timestamp = Alarm::get_ticks().unwrap();
-
-        // Fill the buffer with current data.
-        let msg_len = msg_buf.fill(timestamp, sequence_no, temperature_centigrades_celcius);
-
-        // Transmit a frame
-        Ieee802154::transmit_frame(&msg_buf.inner()[..msg_len]).unwrap();
-
-        writeln!(
-            ConsoleLite::writer(),
-            "Transmitted frame {} of len {}!\n",
-            sequence_no,
-            msg_len,
-        )
-        .unwrap();
-
-        // Sleep for a predefined period of time, so that each mote sends its message.
-        Alarm::sleep_for(SLEEP_TIME).unwrap();
-
-        // For each peer...
-        for _ in 0..N_MOTES - 1 {
-            // Receive a frame from it.
-            let maybe_frame = operator
-                .receive_frame_timed(&mut alarm, Milliseconds(10))
-                .unwrap();
-
-            struct Ascii<'a>(&'a [u8]);
-            impl Display for Ascii<'_> {
-                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                    for b in self.0.iter().copied() {
-                        let c = char::from_u32(b as u32).unwrap_or('*');
-                        f.write_char(c)?;
-                    }
-                    Ok(())
+        struct Ascii<'a>(&'a [u8]);
+        impl Display for Ascii<'_> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                for b in self.0.iter().copied() {
+                    let c = char::from_u32(b as u32).unwrap_or('*');
+                    f.write_char(c)?;
                 }
-            }
-
-            if let Some(frame) = maybe_frame {
-                let body_len = frame.payload_len as usize;
-                let raw_body = &frame.body[..body_len];
-                let decoded_frame = core::str::from_utf8(raw_body);
-                match decoded_frame {
-                    Ok(body) => {
-                        writeln!(
-                            ConsoleLite::writer(),
-                            "Received frame (len={}):\n{}\n\n",
-                            body_len,
-                            body
-                        ).unwrap()
-                    }
-                    Err(err) => writeln!(
-                        ConsoleLite::writer(),
-                        "Received frame (len={}):\n<error decoding> {}, parsed part: {}\n, remaining raw body:\n{:?}\n",
-                        body_len,
-                        err,
-                        Ascii(raw_body),
-                        &raw_body[err.valid_up_to()..],
-                    )
-                    .unwrap(),
-                }
-            } else {
-                writeln!(ConsoleLite::writer(), "Timed out waiting for frame").unwrap();
+                Ok(())
             }
         }
 
-        sequence_no += 1;
-    }
+        let body_len = frame.payload_len as usize;
+        let raw_body = &frame.body[..body_len];
+        let decoded_frame = core::str::from_utf8(raw_body);
+        match decoded_frame {
+            Ok(body) => {
+                writeln!(
+                    ConsoleLite::writer(),
+                    "Received frame (len={}):\n{}\n\n",
+                    body_len,
+                    body
+                ).unwrap()
+            }
+            Err(err) => writeln!(
+                ConsoleLite::writer(),
+                "Received frame (len={}):\n<error decoding> {}, parsed part: {}\n, remaining raw body:\n{:?}\n",
+                body_len,
+                err,
+                Ascii(raw_body),
+                &raw_body[err.valid_up_to()..],
+            )
+            .unwrap(),
+        }
+    };
+
+    let mut frames_buf1 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
+    let mut frames_buf2 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
+    let mut operator =
+        RxBufferAlternatingOperator::new(&mut frames_buf1, &mut frames_buf2).unwrap();
+
+    operator
+        .rx_scope(&mut rx_callback, || {
+            loop {
+                // Measure temperature.
+                let temperature_centigrades_celcius = Temperature::read_temperature_sync().unwrap();
+
+                // Get current time.
+                let timestamp = Alarm::get_ticks().unwrap();
+
+                // Fill the buffer with current data.
+                let msg_len = msg_buf.fill(timestamp, sequence_no, temperature_centigrades_celcius);
+
+                // Transmit a frame
+                Ieee802154::transmit_frame(&msg_buf.inner()[..msg_len]).unwrap();
+
+                writeln!(
+                    ConsoleLite::writer(),
+                    "Transmitted frame {} of len {}!\n",
+                    sequence_no,
+                    msg_len,
+                )
+                .unwrap();
+
+                // Sleep for a predefined period of time, so that each mote sends its message.
+                Alarm::sleep_for(sleep_len).unwrap();
+
+                sequence_no += 1;
+            }
+        })
+        .unwrap();
 }
