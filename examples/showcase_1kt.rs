@@ -10,7 +10,7 @@
 
 use core::fmt::{Display, Write as _};
 use libtock::alarm::{Alarm, Milliseconds};
-// use libtock::console::Console;
+use libtock::console::Console;
 use libtock::console_lite::ConsoleLite;
 use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
 use libtock::runtime::{set_main, stack_size};
@@ -232,14 +232,41 @@ fn main() {
         }
     };
 
+    let mut read_callback = |len: usize, buf_res: Result<&mut [u8], ErrorCode>| {
+        if let Ok(buf) = buf_res {
+            match len {
+                0 => unreachable!("Empty read!"),
+                1 => {
+                    match buf[0] {
+                        b't' => {
+                            broadcast_temperature_measurement();
+                            Some(buf)
+                        }
+                        _ => {
+                            // terminate
+                            None
+                        }
+                    }
+                }
+                _ => unreachable!("Read bigger than buf len!"),
+            }
+        } else {
+            None
+        }
+    };
+
     operator
         .rx_scope(&mut rx_callback, || {
-            loop {
-                broadcast_temperature_measurement();
+            let mut uart_full_buf = [0u8; 1];
+            Console::read_scope(&mut uart_full_buf, &mut read_callback, || {
+                loop {
+                    Console::write(b"Press 't' for temperature read.\n").unwrap();
 
-                // Sleep for a predefined period of time, so that each mote sends its message.
-                Alarm::sleep_for(sleep_len).unwrap();
-            }
+                    // Sleep for a predefined period of time, so that each mote sends its message.
+                    Alarm::sleep_for(sleep_len).unwrap();
+                }
+            })
+            .unwrap();
         })
         .unwrap();
 }
