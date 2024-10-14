@@ -10,7 +10,7 @@
 
 use core::fmt::{Display, Write as _};
 use libtock::alarm::{Alarm, Milliseconds};
-use libtock::console::Console;
+use libtock::console::Console as ConsoleFull;
 use libtock::console_lite::ConsoleLite;
 use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
 use libtock::runtime::{set_main, stack_size};
@@ -258,9 +258,9 @@ fn main() {
     operator
         .rx_scope(&mut rx_callback, || {
             let mut uart_full_buf = [0u8; 1];
-            Console::read_scope(&mut uart_full_buf, &mut read_callback, || {
+            ConsoleFull::read_scope(&mut uart_full_buf, &mut read_callback, || {
                 loop {
-                    Console::write(b"Press 't' for temperature read.\n").unwrap();
+                    ConsoleFull::write(b"Press 't' for temperature read.\n").unwrap();
 
                     // Sleep for a predefined period of time, so that each mote sends its message.
                     Alarm::sleep_for(sleep_len).unwrap();
