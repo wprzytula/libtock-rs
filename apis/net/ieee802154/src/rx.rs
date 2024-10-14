@@ -299,9 +299,7 @@ mod alternate_receive_buffers {
     impl<'buf, const N: usize, S: Syscalls, C: Config> Drop for RxRingBufferInKernel<'buf, N, S, C> {
         // Unshares the buffer to prevent kernel accessing no longer valid memory.
         fn drop(&mut self) {
-            share::scope::<AllowRw<_, DRIVER_NUM, { allow_rw::READ }>, _, _>(|handle| {
-                let _ = S::allow_rw::<C, DRIVER_NUM, { allow_rw::READ }>(handle, &mut []);
-            });
+            S::unallow_rw(DRIVER_NUM, allow_rw::READ);
         }
     }
 
