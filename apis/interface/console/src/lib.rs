@@ -106,7 +106,7 @@ impl<S: Syscalls, C: Config> Console<S, C> {
 
     pub fn read_scope<ResT>(
         buf: &mut [u8],
-        read_callback: &mut (dyn FnMut(usize, Result<&mut [u8], ErrorCode>) -> Option<&mut [u8]>),
+        read_callback: &mut (dyn FnMut(usize, Result<&mut [u8], ErrorCode>) -> bool),
         scoped_code: impl FnOnce() -> ResT,
     ) -> Result<ResT, ErrorCode> {
         let len = buf.len();
@@ -212,17 +212,13 @@ mod allowed_buf {
 pub use allowed_buf::AllowedBuf;
 
 struct ScopedRead<'scope, S: Syscalls, C: Config> {
-    callback:
-        MapCell<&'scope mut (dyn FnMut(usize, Result<&mut [u8], ErrorCode>) -> Option<&mut [u8]>)>,
+    callback: MapCell<&'scope mut (dyn FnMut(usize, Result<&mut [u8], ErrorCode>) -> bool)>,
     allowed_buf: MapCell<AllowedBuf<'scope, S, C>>,
 }
 
 impl<'scope, S: Syscalls, C: Config> ScopedRead<'scope, S, C> {
     fn new(
-        read_callback: &'scope mut (dyn FnMut(
-            usize,
-            Result<&mut [u8], ErrorCode>,
-        ) -> Option<&mut [u8]>),
+        read_callback: &'scope mut (dyn FnMut(usize, Result<&mut [u8], ErrorCode>) -> bool),
         allowed_buf: AllowedBuf<'scope, S, C>,
     ) -> Self {
         Self {

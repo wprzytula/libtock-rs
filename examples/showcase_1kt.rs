@@ -240,18 +240,18 @@ fn main() {
                     match buf[0] {
                         b't' => {
                             broadcast_temperature_measurement();
-                            Some(buf)
+                            true
                         }
                         _ => {
                             // terminate
-                            None
+                            false
                         }
                     }
                 }
                 _ => unreachable!("Read bigger than buf len!"),
             }
         } else {
-            None
+            false
         }
     };
 
