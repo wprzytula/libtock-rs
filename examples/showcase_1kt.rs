@@ -153,8 +153,34 @@ fn main() {
     Ieee802154::radio_on().unwrap();
     assert!(Ieee802154::is_on());
 
-    let mut sequence_no = 0_usize;
-    let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
+    let mut broadcast_temperature_measurement = {
+        let mut sequence_no = 0_usize;
+        let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
+
+        move || {
+            // Measure temperature.
+            let temperature_centigrades_celcius = Temperature::read_temperature_sync().unwrap();
+
+            // Get current time.
+            let timestamp = Alarm::get_ticks().unwrap();
+
+            // Fill the buffer with current data.
+            let msg_len = msg_buf.fill(timestamp, sequence_no, temperature_centigrades_celcius);
+
+            // Transmit a frame
+            Ieee802154::transmit_frame(&msg_buf.inner()[..msg_len]).unwrap();
+
+            writeln!(
+                ConsoleLite::writer(),
+                "Transmitted frame {} of len {}!\n",
+                sequence_no,
+                msg_len,
+            )
+            .unwrap();
+
+            sequence_no += 1;
+        }
+    };
 
     let cherry_id = get_cherry_id()
         .map(str::parse::<u32>)
@@ -209,30 +235,10 @@ fn main() {
     operator
         .rx_scope(&mut rx_callback, || {
             loop {
-                // Measure temperature.
-                let temperature_centigrades_celcius = Temperature::read_temperature_sync().unwrap();
-
-                // Get current time.
-                let timestamp = Alarm::get_ticks().unwrap();
-
-                // Fill the buffer with current data.
-                let msg_len = msg_buf.fill(timestamp, sequence_no, temperature_centigrades_celcius);
-
-                // Transmit a frame
-                Ieee802154::transmit_frame(&msg_buf.inner()[..msg_len]).unwrap();
-
-                writeln!(
-                    ConsoleLite::writer(),
-                    "Transmitted frame {} of len {}!\n",
-                    sequence_no,
-                    msg_len,
-                )
-                .unwrap();
+                broadcast_temperature_measurement();
 
                 // Sleep for a predefined period of time, so that each mote sends its message.
                 Alarm::sleep_for(sleep_len).unwrap();
-
-                sequence_no += 1;
             }
         })
         .unwrap();
