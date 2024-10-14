@@ -128,22 +128,26 @@ impl<const N: usize> MsgBuf<N> {
     }
 }
 
-fn main() {
+fn configure_radio() {
     // Configure the radio
-    let pan: u16 = 0xcafe;
-    let addr_short: u16 = 0xdead;
-    let addr_long: u64 = 0xdead_bead;
-    let tx_power: i8 = 5;
-    let channel: u8 = 11;
+    const PAN: u16 = 0xcafe;
+    const ADDR_SHORT: u16 = 0xdead;
+    const ADDR_LONG: u64 = 0xdead_bead;
+    const TX_POWER: i8 = 5;
+    const CHANNEL: u8 = 11;
 
-    Ieee802154::set_pan(pan);
-    Ieee802154::set_address_short(addr_short);
-    Ieee802154::set_address_long(addr_long);
-    Ieee802154::set_tx_power(tx_power).unwrap();
-    Ieee802154::set_channel(channel).unwrap();
+    Ieee802154::set_pan(PAN);
+    Ieee802154::set_address_short(ADDR_SHORT);
+    Ieee802154::set_address_long(ADDR_LONG);
+    Ieee802154::set_tx_power(TX_POWER).unwrap();
+    Ieee802154::set_channel(CHANNEL).unwrap();
 
     // Don't forget to commit the config!
     Ieee802154::commit_config();
+}
+
+fn main() {
+    configure_radio();
 
     // Turn the radio on
     Ieee802154::radio_on().unwrap();
