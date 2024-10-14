@@ -23,6 +23,8 @@ rust_embedded = [
 ]
 
 [dependencies]
+zerocopy = { version = "0.8.5", features = ["derive"] }
+
 libtock_adc = { path = "apis/peripherals/adc" }
 libtock_air_quality = { path = "apis/sensors/air_quality" }
 libtock_alarm = { path = "apis/peripherals/alarm" }

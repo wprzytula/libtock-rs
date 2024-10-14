@@ -17,6 +17,7 @@ use libtock::runtime::{set_main, stack_size};
 use libtock::temperature::Temperature;
 use libtock_ieee802154::Frame;
 use libtock_platform::ErrorCode;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 set_main! {main}
 stack_size! {0xA00}
@@ -25,23 +26,44 @@ stack_size! {0xA00}
 const BUF_SIZE: usize = 2;
 
 /// Interval between frame transmissions.
-const N_SECS: u32 = 3;
+const N_SECS: u32 = 5;
 // const SLEEP_TIME: Milliseconds = Milliseconds(1000 * N_SECS);
 
 fn get_cherry_id() -> Option<&'static str> {
     option_env!("HENI_DEVICE")
 }
 
-struct TemperatureDisplay(i32);
-
-impl TemperatureDisplay {
-    const MAX_DISPLAYED_BYTES_LEN: usize =
-        1 /* sign */ +
-        4 /* +-1000*C is for sure a bound for measured temperature */ +
-        1 /* decimal dot */ +
-        2 /* decimal points */ +
-        2 /* *C */;
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+struct TemperatureMeasurementMsg {
+    cherry_mote_id: u32,
+    sequential_no: u32,
+    timestamp: u32,
+    temperature_centigrades_celsius: i32,
 }
+
+impl TemperatureMeasurementMsg {
+    fn print(&self) {
+        let &TemperatureMeasurementMsg {
+            cherry_mote_id,
+            sequential_no,
+            timestamp,
+            temperature_centigrades_celsius,
+        } = self;
+
+        writeln!(
+            ConsoleLite::writer(),
+            "Timestamp {}, CherryMote {}, measurement no. {}, temperature {}.",
+            timestamp,
+            cherry_mote_id,
+            sequential_no,
+            TemperatureDisplay(temperature_centigrades_celsius)
+        )
+        .unwrap()
+    }
+}
+
+struct TemperatureDisplay(i32);
 
 impl Display for TemperatureDisplay {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -52,79 +74,6 @@ impl Display for TemperatureDisplay {
             i32::abs(self.0) / 100,
             i32::abs(self.0) % 100
         )
-    }
-}
-
-const U32_MAX_DISPLAY_LEN: usize = 10;
-
-macro_rules! msg_template {
-    () => {
-        "Timestamp {}, CherryMote {}, measurement no. {}, temperature {}."
-    };
-}
-const MSG_TEMPLATE_REAL_LEN: usize = msg_template!().len() - 4 /* number of substitutions */ * 2 /* pair of braces */;
-
-const MSG_BUF_LEN: usize = MSG_TEMPLATE_REAL_LEN
-    + U32_MAX_DISPLAY_LEN /* timestamp */
-    + U32_MAX_DISPLAY_LEN /* CherryMote id */
-    + TemperatureDisplay::MAX_DISPLAYED_BYTES_LEN;
-
-struct MsgBuf<const N: usize> {
-    buf: [u8; N],
-    offset: usize,
-}
-impl<const N: usize> MsgBuf<N> {
-    fn new() -> Self {
-        Self {
-            buf: [0_u8; N],
-            offset: 0,
-        }
-    }
-
-    fn fill(
-        &mut self,
-        timestamp: u32,
-        sequence_no: usize,
-        temperature_centigrades_celcius: i32,
-    ) -> usize {
-        let temperature_displayer = TemperatureDisplay(temperature_centigrades_celcius);
-
-        // Each filling start overrides the buffer.
-        self.offset = 0;
-
-        struct Writer<'a> {
-            buf: &'a mut [u8],
-            offset: &'a mut usize,
-        }
-        impl core::fmt::Write for Writer<'_> {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let prefix = &mut self.buf[*self.offset..*self.offset + s.len()];
-                prefix.copy_from_slice(s.as_bytes());
-                *self.offset += s.len();
-                Ok(())
-            }
-        }
-
-        let mut w = Writer {
-            buf: &mut self.buf,
-            offset: &mut self.offset,
-        };
-
-        writeln!(
-            w,
-            msg_template!(),
-            timestamp,
-            get_cherry_id().unwrap_or("<unknown id>"),
-            sequence_no,
-            temperature_displayer
-        )
-        .unwrap();
-
-        self.offset
-    }
-
-    fn inner(&self) -> &[u8] {
-        &self.buf
     }
 }
 
@@ -147,6 +96,8 @@ fn configure_radio() {
 }
 
 fn main() {
+    let cherry_mote_id = get_cherry_id().map(str::parse::<u32>).unwrap().unwrap();
+
     configure_radio();
 
     // Turn the radio on
@@ -154,27 +105,34 @@ fn main() {
     assert!(Ieee802154::is_on());
 
     let mut broadcast_temperature_measurement = {
-        let mut sequence_no = 0_usize;
-        let mut msg_buf = MsgBuf::<MSG_BUF_LEN>::new();
+        const MSG_LEN: usize = core::mem::size_of::<TemperatureMeasurementMsg>();
+        let mut msg_buf = [0_u8; MSG_LEN];
+        let mut sequence_no = 0_u32;
 
         move || {
             // Measure temperature.
-            let temperature_centigrades_celcius = Temperature::read_temperature_sync().unwrap();
+            let temperature_centigrades_celsius = Temperature::read_temperature_sync().unwrap();
 
             // Get current time.
             let timestamp = Alarm::get_ticks().unwrap();
 
             // Fill the buffer with current data.
-            let msg_len = msg_buf.fill(timestamp, sequence_no, temperature_centigrades_celcius);
+            let msg = TemperatureMeasurementMsg {
+                cherry_mote_id,
+                sequential_no: sequence_no,
+                timestamp,
+                temperature_centigrades_celsius,
+            };
+            msg.write_to(&mut msg_buf).unwrap();
 
             // Transmit a frame
-            Ieee802154::transmit_frame(&msg_buf.inner()[..msg_len]).unwrap();
+            Ieee802154::transmit_frame(&msg_buf).unwrap();
 
             writeln!(
                 ConsoleLite::writer(),
                 "Transmitted frame {} of len {}!\n",
                 sequence_no,
-                msg_len,
+                MSG_LEN,
             )
             .unwrap();
 
@@ -182,12 +140,7 @@ fn main() {
         }
     };
 
-    let cherry_id = get_cherry_id()
-        .map(str::parse::<u32>)
-        .transpose()
-        .unwrap()
-        .unwrap_or(0);
-    let sleep_len = Milliseconds(N_SECS * 1000 + cherry_id);
+    let sleep_len = Milliseconds(N_SECS * 1000 + cherry_mote_id);
 
     let mut frames_buf1 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
     let mut frames_buf2 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
@@ -197,38 +150,57 @@ fn main() {
     let mut rx_callback = |frame_res: Result<&mut Frame, ErrorCode>| {
         let frame = frame_res.unwrap();
 
-        struct Ascii<'a>(&'a [u8]);
-        impl Display for Ascii<'_> {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                for b in self.0.iter().copied() {
-                    let c = char::from_u32(b as u32).unwrap_or('*');
-                    f.write_char(c)?;
-                }
-                Ok(())
-            }
-        }
-
         let body_len = frame.payload_len as usize;
         let raw_body = &frame.body[..body_len];
-        let decoded_frame = core::str::from_utf8(raw_body);
-        match decoded_frame {
-            Ok(body) => {
+
+        let msg_res = TemperatureMeasurementMsg::read_from_bytes(raw_body);
+        match msg_res {
+            Ok(msg) => {
+                msg.print();
+            }
+            Err(err) => {
                 writeln!(
                     ConsoleLite::writer(),
-                    "Received frame (len={}):\n{}\n\n",
-                    body_len,
-                    body
-                ).unwrap()
+                    "Failed to parse frame as TemperatureMeasurementMsg: {err}\n"
+                )
+                .unwrap();
+                ConsoleLite::write(
+                    b"Received frame does not fit TemperatureMeasurementMsg! Parsing as str...\n",
+                )
+                .unwrap();
+
+                struct Ascii<'a>(&'a [u8]);
+                impl Display for Ascii<'_> {
+                    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                        for b in self.0.iter().copied() {
+                            let c = char::from_u32(b as u32).unwrap_or('*');
+                            f.write_char(c)?;
+                        }
+                        Ok(())
+                    }
+                }
+
+                let decoded_frame = core::str::from_utf8(raw_body);
+                match decoded_frame {
+                    Ok(body) => {
+                        writeln!(
+                            ConsoleLite::writer(),
+                            "Received frame (len={}):\n{}\n\n",
+                            body_len,
+                            body
+                        ).unwrap()
+                    }
+                    Err(err) => writeln!(
+                        ConsoleLite::writer(),
+                        "Received frame (len={}):\n<error decoding> {}, parsed part: {}\n, remaining raw body:\n{:?}\n",
+                        body_len,
+                        err,
+                        Ascii(raw_body),
+                        &raw_body[err.valid_up_to()..],
+                    )
+                    .unwrap(),
+                }
             }
-            Err(err) => writeln!(
-                ConsoleLite::writer(),
-                "Received frame (len={}):\n<error decoding> {}, parsed part: {}\n, remaining raw body:\n{:?}\n",
-                body_len,
-                err,
-                Ascii(raw_body),
-                &raw_body[err.valid_up_to()..],
-            )
-            .unwrap(),
         }
     };
 
