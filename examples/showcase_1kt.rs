@@ -8,6 +8,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use core::cell::RefCell;
 use core::fmt::{Display, Write as _};
 use libtock::alarm::{Alarm, Milliseconds};
 use libtock::console::Console as ConsoleFull;
@@ -140,6 +141,8 @@ fn main() {
         }
     };
 
+    let last_temperature_msg = RefCell::new(None);
+
     let sleep_len = Milliseconds(N_SECS * 1000 + cherry_mote_id);
 
     let mut frames_buf1 = RxRingBuffer::<{ BUF_SIZE + 1 }>::new();
@@ -156,7 +159,7 @@ fn main() {
         let msg_res = TemperatureMeasurementMsg::read_from_bytes(raw_body);
         match msg_res {
             Ok(msg) => {
-                msg.print();
+                last_temperature_msg.replace(Some(msg));
             }
             Err(err) => {
                 writeln!(
@@ -230,11 +233,20 @@ fn main() {
     operator
         .rx_scope(&mut rx_callback, || {
             let mut uart_full_buf = [0u8; 1];
-            ConsoleFull::read_scope(&mut uart_full_buf, &mut read_callback, || {
-                loop {
-                    ConsoleFull::write(b"Press 't' for temperature read.\n").unwrap();
+            ConsoleFull::read_scope(&mut uart_full_buf, &mut read_callback, || loop {
+                ConsoleFull::write(b"Press 't' for temperature read.\n").unwrap();
 
-                    // Sleep for a predefined period of time, so that each mote sends its message.
+                for _ in 0..10 {
+                    {
+                        let maybe_msg = last_temperature_msg.borrow();
+                        if let Some(msg) = &*maybe_msg {
+                            msg.print();
+                        } else {
+                            ConsoleLite::write(b"No temperature measurement received yet.\n")
+                                .unwrap();
+                        }
+                    }
+
                     Alarm::sleep_for(sleep_len).unwrap();
                 }
             })
