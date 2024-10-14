@@ -1,9 +1,7 @@
 use super::*;
 use core::{
-    cell::RefCell,
     marker::{PhantomData, PhantomPinned},
     ops::{Deref, DerefMut},
-    pin::Pin,
 };
 use libtock_alarm::Alarm;
 use libtock_future::TockFuture;
