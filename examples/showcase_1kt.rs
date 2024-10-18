@@ -11,6 +11,7 @@
 use core::cell::RefCell;
 use core::fmt::{Display, Write as _};
 use libtock::alarm::{Alarm, Milliseconds};
+use libtock::chip_config::ChipConfiguration;
 use libtock::console::Console as ConsoleFull;
 use libtock::console_lite::ConsoleLite;
 use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
@@ -98,6 +99,10 @@ fn configure_radio() {
 
 fn main() {
     let cherry_mote_id = get_cherry_id().map(str::parse::<u32>).unwrap().unwrap();
+
+    let mac = ChipConfiguration::ieee_mac().unwrap();
+
+    writeln!(ConsoleLite::writer(), "MAC: {}", mac).unwrap();
 
     configure_radio();
 
