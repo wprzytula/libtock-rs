@@ -285,6 +285,8 @@ $(eval $(call platform_build,imxrt1050,thumbv7em-none-eabi))
 $(eval $(call platform_build,msp432,thumbv7em-none-eabi))
 $(eval $(call platform_build,clue_nrf52840,thumbv7em-none-eabi))
 $(eval $(call platform_flash,clue_nrf52840,thumbv7em-none-eabi))
+$(eval $(call platform_build,cc2650dk,thumbv7m-none-eabi))
+$(eval $(call platform_flash,cc2650dk,thumbv7m-none-eabi))
 
 # clean cannot safely be invoked concurrently with other actions, so we don't
 # need to depend on toolchain. We also manually remove the nightly toolchain's
@@ -296,3 +298,13 @@ clean:
 	rm -fr nightly/target/
 	cd demos/st7789 && cargo clean
 	$(MAKE) -C tock clean
+
+EXAMPLES_OUT := target/cc2650dk/thumbv7m-none-eabi/release/examples
+
+APPS_FLASH_BEG ?= 0x12000
+APPS_RAM_BEG ?= 0x20003000
+
+.PHONY: app-%
+app-%: examples/%.rs
+	LIBTOCK_LINKER_FLASH=$(APPS_FLASH_BEG) LIBTOCK_LINKER_RAM=$(APPS_RAM_BEG) cargo build --example $* --release --target=thumbv7m-none-eabi --target-dir=target/cc2650dk
+	elf2tab --kernel-major 2 --kernel-minor 0 -n $* -o $(EXAMPLES_OUT)/$*.tab $(EXAMPLES_OUT)/$*,cortex-m3 --app-version 42

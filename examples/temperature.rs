@@ -5,7 +5,7 @@
 #![no_std]
 
 use core::fmt::Write;
-use libtock::console::Console;
+use libtock::console_lite::ConsoleLite;
 
 use libtock::alarm::{Alarm, Milliseconds};
 use libtock::runtime::{set_main, stack_size};
@@ -16,9 +16,9 @@ stack_size! {0x200}
 
 fn main() {
     match Temperature::exists() {
-        Ok(()) => writeln!(Console::writer(), "temperature driver available").unwrap(),
+        Ok(()) => writeln!(ConsoleLite::writer(), "temperature driver available").unwrap(),
         Err(_) => {
-            writeln!(Console::writer(), "temperature driver unavailable").unwrap();
+            writeln!(ConsoleLite::writer(), "temperature driver unavailable").unwrap();
             return;
         }
     }
@@ -26,14 +26,14 @@ fn main() {
     loop {
         match Temperature::read_temperature_sync() {
             Ok(temp_val) => writeln!(
-                Console::writer(),
+                ConsoleLite::writer(),
                 "Temperature: {}{}.{}*C\n",
                 if temp_val > 0 { "" } else { "-" },
                 i32::abs(temp_val) / 100,
                 i32::abs(temp_val) % 100
             )
             .unwrap(),
-            Err(_) => writeln!(Console::writer(), "error while reading temperature",).unwrap(),
+            Err(_) => writeln!(ConsoleLite::writer(), "error while reading temperature",).unwrap(),
         }
 
         Alarm::sleep_for(Milliseconds(2000)).unwrap();

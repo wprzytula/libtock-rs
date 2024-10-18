@@ -170,7 +170,7 @@ impl<S: Syscalls, C: Config> Ieee802154<S, C> {
 // Transmission
 impl<S: Syscalls, C: Config> Ieee802154<S, C> {
     pub fn transmit_frame(frame: &[u8]) -> Result<(), ErrorCode> {
-        let called: Cell<Option<(u32,)>> = Cell::new(None);
+        let called: Cell<Option<(u32, u32)>> = Cell::new(None);
         share::scope::<
             (
                 AllowRo<_, DRIVER_NUM, { allow_ro::WRITE }>,
@@ -191,8 +191,11 @@ impl<S: Syscalls, C: Config> Ieee802154<S, C> {
 
             loop {
                 S::yield_wait();
-                if called.get().is_some() {
-                    return Ok(());
+                if let Some((status, _acked)) = called.get() {
+                    return match status {
+                        0 => Ok(()),
+                        e_status => Err(e_status.try_into().unwrap_or(ErrorCode::Fail)),
+                    };
                 }
             }
         })
@@ -200,7 +203,10 @@ impl<S: Syscalls, C: Config> Ieee802154<S, C> {
 }
 
 mod rx;
-pub use rx::{Frame, RxOperator, RxRingBuffer, RxSingleBufferOperator};
+pub use rx::{
+    AlternatingOperatorFrameFut, Frame, ReceivedFrameOrFut, RxBufferAlternatingOperator,
+    RxOperator, RxRingBuffer, RxSingleBufferOperator,
+};
 
 /// System call configuration trait for `Ieee802154`.
 pub trait Config:
