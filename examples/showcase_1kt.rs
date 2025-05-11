@@ -98,7 +98,10 @@ fn configure_radio() {
 }
 
 fn main() {
-    let cherry_mote_id = get_cherry_id().map(str::parse::<u32>).unwrap().unwrap();
+    let cherry_mote_id = get_cherry_id()
+        .map(|s| u32::from_str_radix(s, 16))
+        .unwrap()
+        .unwrap();
 
     let mac = ChipConfiguration::ieee_mac().unwrap();
 
