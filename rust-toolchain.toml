@@ -7,9 +7,4 @@
 # in Cargo.toml must be updated as well.
 channel = "1.77"
 components = ["clippy", "rustfmt"]
-targets = [
-    "thumbv6m-none-eabi",
-    "thumbv7em-none-eabi",
-    "riscv32imac-unknown-none-elf",
-    "riscv32imc-unknown-none-elf",
-]
+targets = ["thumbv7m-none-eabi", "thumbv7em-none-eabi"]

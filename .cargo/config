@@ -5,6 +5,8 @@ rriscv32imc = "run --release --target=riscv32imc-unknown-none-elf --example"
 rrv32imc = "rriscv32imc"
 rthumbv7em = "run --release --target=thumbv7em-none-eabi --example"
 rtv7em = "rthumbv7em"
+rthumbv7m = "run --release --target=thumbv7m-none-eabi --example"
+rtv7m = "rthumbv7m"
 
 # Common settings for all embedded targets
 [target.'cfg(any(target_arch = "arm", target_arch = "riscv32"))']
@@ -13,3 +15,6 @@ rustflags = [
     "-C", "link-arg=-icf=all",
 ]
 runner = ["cargo", "run", "-p", "runner", "--release"]
+
+[build]
+target = "thumbv7m-none-eabi"

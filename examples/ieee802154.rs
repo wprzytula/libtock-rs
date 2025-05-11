@@ -3,7 +3,9 @@
 #![no_main]
 #![no_std]
 use libtock::console::Console;
-use libtock::ieee802154::{Ieee802154, RxOperator as _, RxRingBuffer, RxSingleBufferOperator};
+use libtock::ieee802154::{
+    Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer, RxSingleBufferOperator,
+};
 use libtock::runtime::{set_main, stack_size};
 
 set_main! {main}
@@ -36,13 +38,30 @@ fn main() {
     Console::write(b"Transmitted frame!\n").unwrap();
 
     // Showcase receiving to a single buffer - there is a risk of losing some frames.
-    // See [RxSingleBufferOperator] docs for more details.
+    // See [RxSingleBufferOperator] and [RxBufferAlternatingOperator] docs for more details.
     rx_single_buffer();
+
+    // Showcase receiving to a pair of alternating buffers - there is no risk of losing frames.
+    rx_alternating_buffers();
 }
 
 fn rx_single_buffer() {
     let mut buf = RxRingBuffer::<2>::new();
     let mut operator = RxSingleBufferOperator::new(&mut buf);
+
+    let frame1 = operator.receive_frame().unwrap();
+    // Access frame1 data here:
+    let _body_len = frame1.payload_len;
+    let _first_body_byte = frame1.body[0];
+
+    let _frame2 = operator.receive_frame().unwrap();
+    // Access frame2 data here
+}
+
+fn rx_alternating_buffers() {
+    let mut buf1 = RxRingBuffer::<2>::new();
+    let mut buf2 = RxRingBuffer::<2>::new();
+    let mut operator = RxBufferAlternatingOperator::new(&mut buf1, &mut buf2).unwrap();
 
     let frame1 = operator.receive_frame().unwrap();
     // Access frame1 data here:
