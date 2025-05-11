@@ -15,6 +15,7 @@ use libtock::chip_config::ChipConfiguration;
 use libtock::console::Console as ConsoleFull;
 use libtock::console_lite::ConsoleLite;
 use libtock::ieee802154::{Ieee802154, RxBufferAlternatingOperator, RxOperator as _, RxRingBuffer};
+use libtock::leds::Leds;
 use libtock::runtime::{set_main, stack_size};
 use libtock::temperature::Temperature;
 use libtock_ieee802154::Frame;
@@ -225,6 +226,10 @@ fn main() {
                             broadcast_temperature_measurement();
                             true
                         }
+                        b'l' => {
+                            Leds::toggle(0).unwrap();
+                            true
+                        }
                         _ => {
                             // terminate
                             false
@@ -242,7 +247,8 @@ fn main() {
         .rx_scope(&mut rx_callback, || {
             let mut uart_full_buf = [0u8; 1];
             ConsoleFull::read_scope(&mut uart_full_buf, &mut read_callback, || loop {
-                ConsoleFull::write(b"Press 't' for temperature read.\n").unwrap();
+                ConsoleFull::write(b"Press 't' for temperature read, or 'l' to toggle the LED.\n")
+                    .unwrap();
 
                 for _ in 0..10 {
                     {
