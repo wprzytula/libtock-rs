@@ -15,3 +15,6 @@ rustflags = [
     "-C", "link-arg=-icf=all",
 ]
 runner = ["cargo", "run", "-p", "runner", "--release"]
+
+[build]
+target = "thumbv7m-none-eabi"
