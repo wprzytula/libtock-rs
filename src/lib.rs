@@ -46,6 +46,11 @@ pub mod console {
     pub type Console = console::Console<super::runtime::TockSyscalls>;
     pub use console::ConsoleWriter;
 }
+pub mod console_lite {
+    use libtock_console_lite as console_lite;
+    pub type ConsoleLite = console_lite::ConsoleLite<super::runtime::TockSyscalls>;
+    pub use console_lite::ConsoleLiteWriter;
+}
 pub mod chip_config {
     use libtock_chip_config as chip_config;
     pub type ChipConfiguration = chip_config::ChipConfiguration<super::runtime::TockSyscalls>;
