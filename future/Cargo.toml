@@ -1,0 +1,19 @@
+[package]
+authors = ["Tock Project Developers <tock-dev@googlegroups.com>"]
+categories = ["embedded", "no-std", "os"]
+description = """libtock-rs future implementation. Provides the TockFuture
+                 abstraction, which allows awaining resolution and checking
+                 status of a running syscall. Its main goal is to allow
+                 combining multiple running syscalls into a single TOckFuture
+                 using future combinators."""
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+name = "libtock_future"
+repository = "https://www.github.com/tock/libtock/rs"
+rust-version.workspace = true
+version = "0.1.0"
+
+[features]
+
+[dependencies]
+libtock_platform = { path = "../platform" }
