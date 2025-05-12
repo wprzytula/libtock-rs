@@ -13,6 +13,7 @@ description = "libtock alarm driver"
 
 [dependencies]
 libtock_platform = { path = "../../../platform" }
+libtock_future = { path = "../../../future" }
 
 [dev-dependencies]
 libtock_unittest = { path = "../../../unittest" }
