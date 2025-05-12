@@ -299,3 +299,15 @@ clean:
 	rm -fr nightly/target/
 	cd demos/st7789 && cargo clean
 	$(MAKE) -C tock clean
+
+EXAMPLES_OUT_PREFIX := target/cc2650
+EXAMPLES_OUT := ${EXAMPLES_OUT_PREFIX}/thumbv7m-none-eabi/release/examples
+
+APP_VERSION ?= 42
+APPS_FLASH_BEG ?= 0x12000
+APPS_RAM_BEG ?= 0x20003000
+
+.PHONY: app-%
+app-%: examples/%.rs
+	LIBTOCK_LINKER_FLASH=$(APPS_FLASH_BEG) LIBTOCK_LINKER_RAM=$(APPS_RAM_BEG) cargo build --example $* --release --target=thumbv7m-none-eabi --target-dir=${EXAMPLES_OUT_PREFIX}
+	elf2tab --kernel-major 2 --kernel-minor 0 -n $* -o $(EXAMPLES_OUT)/$*.tab $(EXAMPLES_OUT)/$*,cortex-m3 --app-version ${APP_VERSION}
