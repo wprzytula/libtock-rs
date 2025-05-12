@@ -46,6 +46,10 @@ pub mod console {
     pub type Console = console::Console<super::runtime::TockSyscalls>;
     pub use console::ConsoleWriter;
 }
+pub mod chip_config {
+    use libtock_chip_config as chip_config;
+    pub type ChipConfiguration = chip_config::ChipConfiguration<super::runtime::TockSyscalls>;
+}
 pub mod gpio {
     use libtock_gpio as gpio;
     pub type Gpio = gpio::Gpio<super::runtime::TockSyscalls>;
